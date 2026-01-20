@@ -1,4 +1,34 @@
-import stationsData from '../data/stations.json';
+import stationsData from '../data/stations-viaggiatreno.json';
+
+function normalizeStation(station) {
+  if (!station) return null;
+
+  const region = station.region ?? station.regionId ?? null;
+
+  const city =
+    typeof station.city === 'string' && station.city.trim()
+      ? station.city.trim()
+      : typeof station[''] === 'string' && station[''].trim()
+        ? station[''].trim()
+        : null;
+
+  const toNumberOrNull = (value) => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return null;
+  };
+
+  return {
+    ...station,
+    city,
+    region,
+    lat: toNumberOrNull(station.lat),
+    lon: toNumberOrNull(station.lon),
+  };
+}
 
 /**
  * Cerca stazioni in base a una query
@@ -16,6 +46,7 @@ export function searchStations(query, maxResults = 10) {
 
   const results = stationsData
     .map(station => {
+      const normalizedStation = normalizeStation(station);
       const normalizedName = normalizeString(station.name);
       
       // Calcola score di rilevanza
@@ -38,7 +69,7 @@ export function searchStations(query, maxResults = 10) {
         score = 25;
       }
 
-      return { ...station, score };
+      return { ...normalizedStation, score };
     })
     .filter(station => station.score > 0)
     .sort((a, b) => {
@@ -59,7 +90,27 @@ export function searchStations(query, maxResults = 10) {
  * @returns {Object|null} La stazione o null se non trovata
  */
 export function getStationById(stationId) {
-  return stationsData.find(station => station.id === stationId) || null;
+  const found = stationsData.find(station => station.id === stationId) || null;
+  return found ? normalizeStation(found) : null;
+}
+
+/**
+ * Ottiene una stazione specifica per nome (match tollerante su stringa normalizzata)
+ * @param {string} stationName - Nome stazione
+ * @returns {Object|null} La stazione o null se non trovata
+ */
+export function getStationByName(stationName) {
+  const name = typeof stationName === 'string' ? stationName.trim() : '';
+  if (!name) return null;
+
+  const target = normalizeString(name);
+  if (!target) return null;
+
+  const exact = stationsData.find((s) => normalizeString(s?.name || '') === target) || null;
+  if (exact) return normalizeStation(exact);
+
+  const best = searchStations(name, 1)[0] || null;
+  return best ? normalizeStation(best) : null;
 }
 
 /**
@@ -78,5 +129,5 @@ function normalizeString(str) {
  * @returns {Array} Array di tutte le stazioni
  */
 export function getAllStations() {
-  return stationsData;
+  return stationsData.map(normalizeStation).filter(Boolean);
 }

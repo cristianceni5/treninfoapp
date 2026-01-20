@@ -4,8 +4,10 @@ import { useIsFocused } from '@react-navigation/native';
 
 export default function AnimatedScreen({ children }) {
   const isFocused = useIsFocused();
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-  const scaleAnim = useRef(new Animated.Value(0.98)).current;
+  // Importante: inizializza i valori in base al focus per evitare un frame “bianco”
+  // quando la schermata è già attiva ma l’effetto non è ancora partito.
+  const fadeAnim = useRef(new Animated.Value(isFocused ? 1 : 0)).current;
+  const scaleAnim = useRef(new Animated.Value(isFocused ? 1 : 0.98)).current;
 
   useEffect(() => {
     if (isFocused) {

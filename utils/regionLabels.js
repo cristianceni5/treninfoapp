@@ -32,5 +32,20 @@ export const REGION_LABELS = {
  */
 export function getRegionName(regionCode) {
   if (!regionCode) return null;
-  return REGION_LABELS[String(regionCode)] || 'Regione sconosciuta';
+  if (typeof regionCode === 'object') {
+    const maybeName = regionCode?.name ?? regionCode?.label ?? regionCode?.nome;
+    if (typeof maybeName === 'string' && maybeName.trim()) return maybeName.trim();
+    const maybeId = regionCode?.id ?? regionCode?.code ?? regionCode?.regionId;
+    if (maybeId !== undefined && maybeId !== null) {
+      return REGION_LABELS[String(maybeId)] || 'Regione sconosciuta';
+    }
+    return 'Regione sconosciuta';
+  }
+
+  const key = String(regionCode).trim();
+  if (!key) return null;
+  if (REGION_LABELS[key]) return REGION_LABELS[key];
+  if (/^\d+$/.test(key)) return 'Regione sconosciuta';
+  // Se arriva già come nome (es. "Lombardia"), lo restituiamo direttamente.
+  return key;
 }

@@ -6,6 +6,7 @@ const express = require('express');
 const cors = require('cors');
 
 const app = express();
+const router = express.Router();
 
 // CORS
 // Se vuoi restringere le origini (utile quando consumerai queste API da React), imposta:
@@ -30,6 +31,14 @@ app.use(
 
 // Per leggere JSON nel body delle POST (es. /api/solutions in POST)
 app.use(express.json());
+
+// Supporta i path più comuni:
+// - locale: /api/...
+// - opzionale senza prefisso: /...
+// - Netlify Functions: /.netlify/functions/api/...
+app.use('/.netlify/functions/api', router);
+app.use('/api', router);
+app.use('/', router);
 
 // ---------------- API ------------------
 
@@ -576,7 +585,7 @@ function enrichTrainData(data) {
 
 // Autocomplete stazioni (ViaggiaTreno) - Per "Cerca Stazione"
 // GET /api/viaggiatreno/autocomplete?query=FIREN
-app.get('/api/viaggiatreno/autocomplete', async (req, res) => {
+router.get('/viaggiatreno/autocomplete', async (req, res) => {
   const query = (req.query.query || '').trim();
   if (query.length < 2) {
     return res.json({ ok: true, data: [] });
@@ -593,7 +602,10 @@ app.get('/api/viaggiatreno/autocomplete', async (req, res) => {
 
     const data = lines.map((line) => {
       const [name, code] = line.split('|');
-      return { name: name || '', code: code || '' };
+      const nome = name || '';
+      const codice = code || '';
+      // Compatibilità: alcune versioni si aspettano { nome, codice }, altre { name, code }.
+      return { nome, codice, name: nome, code: codice };
     });
 
     res.json({ ok: true, data });
@@ -609,7 +621,7 @@ app.get('/api/viaggiatreno/autocomplete', async (req, res) => {
 
 // Autocomplete stazioni (LeFrecce) - Per "Cerca Viaggio"
 // GET /api/lefrecce/autocomplete?query=FIREN
-app.get('/api/lefrecce/autocomplete', async (req, res) => {
+router.get('/lefrecce/autocomplete', async (req, res) => {
   const query = (req.query.query || '').trim();
   if (query.length < 2) {
     return res.json({ ok: true, data: [] });
@@ -648,7 +660,7 @@ app.get('/api/lefrecce/autocomplete', async (req, res) => {
 
 // Manteniamo la vecchia route per compatibilità (o la redirezioniamo)
 // In questo caso la facciamo puntare a ViaggiaTreno per default, o la rimuoviamo se aggiorniamo il frontend
-app.get('/api/stations/autocomplete', async (req, res) => {
+router.get('/stations/autocomplete', async (req, res) => {
    // Fallback a ViaggiaTreno per default se non specificato
    res.redirect(307, `/api/viaggiatreno/autocomplete?query=${encodeURIComponent(req.query.query || '')}`);
 });
@@ -726,7 +738,7 @@ async function resolveLocationIdByName(stationName) {
 
 
 // Ricerca soluzioni di viaggio Trenitalia (LeFrecce)
-app.get('/api/solutions', async (req, res) => {
+router.get('/solutions', async (req, res) => {
   console.log('GET /api/solutions called with query:', req.query);
   try {
     let {
@@ -862,7 +874,7 @@ app.get('/api/solutions', async (req, res) => {
 
 // Info stazione (dettagli + meteo regione)
 // GET /api/stations/info?stationCode=S06904
-app.get('/api/stations/info', async (req, res) => {
+router.get('/stations/info', async (req, res) => {
   const stationCode = (req.query.stationCode || '').trim();
 
   if (!stationCode) {
@@ -944,7 +956,7 @@ app.get('/api/stations/info', async (req, res) => {
 // Partenze da stazione
 // GET /api/stations/departures?stationCode=S06904&when=now
 // opzionale: &when=2025-11-28T10:30:00
-app.get('/api/stations/departures', async (req, res) => {
+router.get('/stations/departures', async (req, res) => {
   const stationCode = (req.query.stationCode || '').trim();
   const when = (req.query.when || 'now').trim();
 
@@ -1012,7 +1024,7 @@ app.get('/api/stations/departures', async (req, res) => {
 
 // Arrivi in stazione
 // GET /api/stations/arrivals?stationCode=S06904&when=now
-app.get('/api/stations/arrivals', async (req, res) => {
+router.get('/stations/arrivals', async (req, res) => {
   const stationCode = (req.query.stationCode || '').trim();
   const when = (req.query.when || 'now').trim();
 
@@ -1079,7 +1091,7 @@ app.get('/api/stations/arrivals', async (req, res) => {
 
 // Stato treno per numero
 // GET /api/trains/status?trainNumber=666
-app.get('/api/trains/status', async (req, res) => {
+router.get('/trains/status', async (req, res) => {
   const trainNumber = (req.query.trainNumber || '').trim();
   const originCodeHint = (req.query.originCode || '').trim();
   const technicalHint = (req.query.technical || '').trim();
@@ -1296,7 +1308,7 @@ app.get('/api/trains/status', async (req, res) => {
 
 // TODO: endpoint tabellone HTML (attualmente ritorna HTML grezzo; tenuto per debug)
 // GET /api/stations/board?stationCode=S06000
-app.get('/api/stations/board', async (req, res) => {
+router.get('/stations/board', async (req, res) => {
   const stationCode = (req.query.stationCode || '').trim();
 
   if (!stationCode) {
@@ -1327,7 +1339,7 @@ app.get('/api/stations/board', async (req, res) => {
 
 // News ViaggiaTreno (endpoint legacy, può risultare datato)
 // GET /api/news
-app.get('/api/news', async (_req, res) => {
+router.get('/news', async (_req, res) => {
   try {
     const url = `${BASE_URL}/news/0/it`;
     const data = await fetchJson(url);

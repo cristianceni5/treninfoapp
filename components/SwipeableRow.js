@@ -1,14 +1,36 @@
-import React, { useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Animated, PanResponder, TouchableOpacity } from 'react-native';
+import { TYPE } from '../utils/uiTokens';
 
 const SWIPE_THRESHOLD = -60;
 const DELETE_BUTTON_WIDTH = 75;
 
-export default function SwipeableRow({ children, onDelete, theme, onSwipeStart, onSwipeEnd }) {
+export default function SwipeableRow({ children, onDelete, theme, onSwipeStart, onSwipeEnd, resetKey }) {
   const translateX = useRef(new Animated.Value(0)).current;
   const opacity = useRef(new Animated.Value(1)).current;
-  const height = useRef(new Animated.Value(1)).current;
   const isSwiping = useRef(false);
+  const isDeleting = useRef(false);
+
+  const deleteOpacity = translateX.interpolate({
+    inputRange: [-DELETE_BUTTON_WIDTH, -10, 0],
+    outputRange: [1, 1, 0],
+    extrapolate: 'clamp',
+  });
+  const deleteTranslateX = translateX.interpolate({
+    inputRange: [-DELETE_BUTTON_WIDTH, 0],
+    outputRange: [0, DELETE_BUTTON_WIDTH],
+    extrapolate: 'clamp',
+  });
+
+  useEffect(() => {
+    // Forza lo stato "chiuso" (utile dopo Undo/ri-render di lista)
+    translateX.stopAnimation();
+    opacity.stopAnimation();
+    translateX.setValue(0);
+    opacity.setValue(1);
+    isSwiping.current = false;
+    isDeleting.current = false;
+  }, [resetKey, opacity, translateX]);
 
   const panResponder = useRef(
     PanResponder.create({
@@ -80,21 +102,19 @@ export default function SwipeableRow({ children, onDelete, theme, onSwipeStart, 
   };
 
   const handleDelete = () => {
-    // Animazione di eliminazione più fluida con fade out e height collapse
+    if (isDeleting.current) return;
+    isDeleting.current = true;
+    
+    // Animazione: tile scorre via a sinistra con fade out
     Animated.parallel([
       Animated.timing(translateX, {
-        toValue: -400,
-        duration: 250,
+        toValue: -500,
+        duration: 300,
         useNativeDriver: true,
       }),
       Animated.timing(opacity, {
         toValue: 0,
-        duration: 250,
-        useNativeDriver: true,
-      }),
-      Animated.timing(height, {
-        toValue: 0,
-        duration: 250,
+        duration: 300,
         useNativeDriver: true,
       }),
     ]).start(() => {
@@ -107,32 +127,43 @@ export default function SwipeableRow({ children, onDelete, theme, onSwipeStart, 
       styles.container,
       {
         opacity,
-        transform: [{ scaleY: height }],
       },
     ]}>
       {/* Pulsante Delete sotto */}
-      <View style={styles.deleteContainer}>
-        <TouchableOpacity 
+      <Animated.View
+        style={[
+          styles.deleteContainer,
+          {
+            backgroundColor: theme.colors.destructive,
+            opacity: deleteOpacity,
+            transform: [{ translateX: deleteTranslateX }],
+          },
+        ]}
+      >
+        <TouchableOpacity
           style={styles.deleteButton}
           onPress={handleDelete}
           activeOpacity={0.8}
+          pointerEvents={isDeleting.current ? 'none' : 'auto'}
         >
-          <Text style={styles.deleteText}>Elimina</Text>
+          <Text style={[styles.deleteText, { color: theme?.colors?.onDestructive || theme?.colors?.text || '#FFFFFF' }]}>
+            Elimina
+          </Text>
         </TouchableOpacity>
-      </View>
+      </Animated.View>
 
       {/* Contenuto swipeable */}
       <Animated.View
         style={[
           styles.swipeableContent,
           {
-            transform: [{ translateX }],
             backgroundColor: theme.colors.card,
+            transform: [{ translateX }],
           },
         ]}
         {...panResponder.panHandlers}
       >
-        <TouchableOpacity onPress={closeSwipe} activeOpacity={1}>
+        <TouchableOpacity onPress={closeSwipe} activeOpacity={1} style={styles.touchableFill}>
           {children}
         </TouchableOpacity>
       </Animated.View>
@@ -144,6 +175,7 @@ const styles = StyleSheet.create({
   container: {
     position: 'relative',
     overflow: 'hidden',
+    width: '100%',
   },
   deleteContainer: {
     position: 'absolute',
@@ -153,7 +185,6 @@ const styles = StyleSheet.create({
     width: 75,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#FF3B30',
   },
   deleteButton: {
     flex: 1,
@@ -162,12 +193,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   deleteText: {
-    color: '#FFFFFF',
-    fontSize: 17,
-    fontFamily: 'TikTokSans-Regular',
+    ...TYPE.titleSemibold,
   },
   swipeableContent: {
-    backgroundColor: '#FFFFFF',
+    // backgroundColor applicato tramite prop
+    width: '100%',
+    alignSelf: 'stretch',
+  },
+  touchableFill: {
+    width: '100%',
   },
 });
-

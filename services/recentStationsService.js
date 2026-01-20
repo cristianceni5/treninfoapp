@@ -3,6 +3,19 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const RECENT_STATIONS_KEY = '@recent_stations';
 const MAX_RECENT_STATIONS = 10;
 
+// Sovrascrive l'intera lista delle stazioni recenti (utile per Undo)
+export const overwriteRecentStations = async (stations) => {
+  try {
+    const list = Array.isArray(stations) ? stations : [];
+    const trimmed = list.slice(0, MAX_RECENT_STATIONS);
+    await AsyncStorage.setItem(RECENT_STATIONS_KEY, JSON.stringify(trimmed));
+    return trimmed;
+  } catch (error) {
+    console.error('Errore nel sovrascrivere le stazioni recenti:', error);
+    return [];
+  }
+};
+
 // Salva una stazione nella lista delle recenti
 export const saveRecentStation = async (station) => {
   try {

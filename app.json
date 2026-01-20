@@ -13,12 +13,14 @@
       "backgroundColor": "#1C1C1E"
     },
     "ios": {
+      "bundleIdentifier": "com.cristianceni.treninfo",
       "supportsTablet": true,
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Treninfo usa la tua posizione per mostrarti le stazioni ferroviarie nelle vicinanze."
       }
     },
     "android": {
+      "package": "com.cristianceni.treninfo",
       "adaptiveIcon": {
         "foregroundImage": "./assets/iconTreninfo-iOS-Default-1024x1024@1x.png",
         "backgroundColor": "#1C1C1E"
@@ -31,6 +33,17 @@
     },
     "web": {
       "favicon": "./assets/iconTreninfo-iOS-Default-1024x1024@1x.png"
-    }
+    },
+    "plugins": [
+      "@react-native-community/datetimepicker",
+      [
+        "expo-notifications",
+        {
+          "enableBackgroundRemoteNotifications": false
+        }
+      ],
+      "./plugins/withLocalOnlyNotifications",
+      "expo-background-task"
+    ]
   }
 }

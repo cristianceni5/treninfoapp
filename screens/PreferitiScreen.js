@@ -1,20 +1,80 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView, ScrollView, Linking, Switch, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Linking, Alert, Platform } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useIsFocused } from '@react-navigation/native';
 import { useTheme } from '../context/ThemeContext';
 import AnimatedScreen from '../components/AnimatedScreen';
+import AccentSwitch from '../components/AccentSwitch';
+import Card from '../components/Card';
+import ListRow from '../components/ListRow';
+import { BORDER, INSETS, RADIUS, SPACING, SPACE, TYPE } from '../utils/uiTokens';
+import { requestNotificationPermissionIfNeeded } from '../services/notificationsService';
+import {
+  getLiveActivitiesEnabled as getLiveActivitiesEnabledSetting,
+  getNotificationsEnabled as getNotificationsEnabledSetting,
+  setLiveActivitiesEnabled as setLiveActivitiesEnabledSetting,
+  setNotificationsEnabled as setNotificationsEnabledSetting,
+} from '../services/settingsService';
+import { cancelAllTrackingSchedules, clearAllTrackedTrains, getTrackedTrains } from '../services/trainTrackingService';
+import { ensureTrainTrackingTaskRegistered, runTrainTrackingNow, unregisterTrainTrackingTask } from '../services/trainTrackingTask';
 
 export default function PreferitiScreen() {
   const { theme, changeTheme, themeMode } = useTheme();
-  const [notificationsEnabled, setNotificationsEnabled] = React.useState(false);
-  const [liveActivitiesEnabled, setLiveActivitiesEnabled] = React.useState(false);
+  const isFocused = useIsFocused();
+  const [notificationsEnabled, setNotificationsEnabledState] = React.useState(false);
+  const [liveActivitiesEnabled, setLiveActivitiesEnabledState] = React.useState(false);
   const [locationEnabled, setLocationEnabled] = React.useState(false);
-  const [defaultScreen, setDefaultScreen] = React.useState('solutions');
+  const [defaultScreen, setDefaultScreen] = React.useState('orari');
+  const [trackedTrainsCount, setTrackedTrainsCount] = React.useState(0);
 
   React.useEffect(() => {
     checkLocationPermission();
+    loadDefaultScreen();
+    loadSettings();
+    loadTrackedTrainsCount();
   }, []);
+
+  React.useEffect(() => {
+    if (!isFocused) return;
+    loadSettings();
+    loadTrackedTrainsCount();
+    checkLocationPermission();
+  }, [isFocused]);
+
+  const normalizeDefaultScreenId = (value) => {
+    const id = String(value || '').trim();
+    if (id === 'train' || id === 'station' || id === 'orari') return id;
+    // Migrazione: id legacy usato in versioni precedenti.
+    if (id === 'solutions') return 'orari';
+    return 'orari';
+  };
+
+  const loadDefaultScreen = async () => {
+    try {
+      const stored = await AsyncStorage.getItem('defaultScreen');
+      const normalized = normalizeDefaultScreenId(stored);
+      setDefaultScreen(normalized);
+      if (stored && stored !== normalized) {
+        await AsyncStorage.setItem('defaultScreen', normalized);
+      }
+    } catch (error) {
+      console.warn('Error loading default screen:', error);
+    }
+  };
+
+  const loadSettings = async () => {
+    const [n, l] = await Promise.all([getNotificationsEnabledSetting(), getLiveActivitiesEnabledSetting()]);
+    setNotificationsEnabledState(Boolean(n));
+    setLiveActivitiesEnabledState(Boolean(l));
+  };
+
+  const loadTrackedTrainsCount = async () => {
+    const tracked = await getTrackedTrains();
+    setTrackedTrainsCount(Array.isArray(tracked) ? tracked.length : 0);
+  };
 
   const checkLocationPermission = async () => {
     const { status } = await Location.getForegroundPermissionsAsync();
@@ -50,173 +110,193 @@ export default function PreferitiScreen() {
   const screenOptions = [
     { id: 'train', label: 'Treno', icon: 'train-outline' },
     { id: 'station', label: 'Stazione', icon: 'location-outline' },
-    { id: 'solutions', label: 'Orari', icon: 'time-outline' },
+    { id: 'orari', label: 'Orari', icon: 'time-outline' },
   ];
+
+  const handleDefaultScreenChange = async (id) => {
+    setDefaultScreen(id);
+    try {
+      await AsyncStorage.setItem('defaultScreen', id);
+    } catch (error) {
+      console.warn('Error saving default screen:', error);
+    }
+  };
+
+  const handleNotificationsToggle = async (value) => {
+    const next = Boolean(value);
+
+    if (!next) {
+      setNotificationsEnabledState(false);
+      await setNotificationsEnabledSetting(false);
+      await cancelAllTrackingSchedules();
+      await unregisterTrainTrackingTask();
+      return;
+    }
+
+    const perm = await requestNotificationPermissionIfNeeded();
+    if (!perm.granted) {
+      setNotificationsEnabledState(false);
+      await setNotificationsEnabledSetting(false);
+      Alert.alert(
+        'Permesso notifiche negato',
+        'Abilita le notifiche dalle impostazioni di sistema per ricevere gli avvisi di tracciamento.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
+    setNotificationsEnabledState(true);
+    await setNotificationsEnabledSetting(true);
+
+    const tracked = await getTrackedTrains();
+    if (Array.isArray(tracked) && tracked.length > 0) {
+      await ensureTrainTrackingTaskRegistered();
+      await runTrainTrackingNow();
+    }
+  };
+
+  const handleLiveActivitiesToggle = async (value) => {
+    const next = Boolean(value);
+    if (!next) {
+      setLiveActivitiesEnabledState(false);
+      await setLiveActivitiesEnabledSetting(false);
+      return;
+    }
+
+    if (Platform.OS !== 'ios') {
+      Alert.alert('Non supportato', 'Live Activities è disponibile solo su iPhone (iOS 16+).', [{ text: 'OK' }]);
+      setLiveActivitiesEnabledState(false);
+      await setLiveActivitiesEnabledSetting(false);
+      return;
+    }
+
+    setLiveActivitiesEnabledState(true);
+    await setLiveActivitiesEnabledSetting(true);
+    Alert.alert(
+      'Live Activities',
+      'In Treninfo verranno abilitate solo con una build nativa (EAS/Development Build). Su Expo Go potrebbe non funzionare.',
+      [{ text: 'OK' }]
+    );
+  };
+
+  const handleClearTrackedTrains = async () => {
+    const tracked = await getTrackedTrains();
+    const count = Array.isArray(tracked) ? tracked.length : 0;
+    if (count === 0) return;
+
+    Alert.alert('Treni seguiti', `Vuoi smettere di seguire ${count === 1 ? 'il treno' : `tutti i ${count} treni`}?`, [
+      { text: 'Annulla', style: 'cancel' },
+      {
+        text: 'Smetti di seguire',
+        style: 'destructive',
+        onPress: async () => {
+          await cancelAllTrackingSchedules();
+          await clearAllTrackedTrains();
+          await unregisterTrainTrackingTask();
+          await loadTrackedTrainsCount();
+        },
+      },
+    ]);
+  };
 
   const handleOpenLink = (url) => {
     Linking.openURL(url);
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+    <SafeAreaView edges={['top']} style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <AnimatedScreen>
-        <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          style={styles.scrollView}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ paddingBottom: SPACE.xl }}
+        >
           
           {/* Sezione Tema */}
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: theme.colors.textSecondary }]}>TEMA</Text>
-            <View style={[
-              styles.optionsContainer,
-              {
-                backgroundColor: theme.colors.card,
-                borderColor: theme.colors.border,
-                shadowColor: '#000',
-                shadowOffset: { width: 0, height: theme.isDark ? 0 : 1 },
-                shadowOpacity: theme.isDark ? 0 : 0.03,
-                shadowRadius: theme.isDark ? 0 : 2,
-                elevation: theme.isDark ? 0 : 1,
-              },
-            ]}>
+            <Card style={styles.optionsContainer}>
               {themeOptions.map((option, index) => (
                 <React.Fragment key={option.id}>
-                  <TouchableOpacity
-                    style={styles.optionItem}
+                  <ListRow
+                    icon={option.icon}
+                    title={option.label}
                     onPress={() => changeTheme(option.id)}
-                    activeOpacity={0.6}
-                  >
-                    <View style={styles.optionLeft}>
-                      <Ionicons name={option.icon} size={20} color={theme.colors.text} />
-                      <Text style={[styles.optionLabel, { color: theme.colors.text }]}>{option.label}</Text>
-                    </View>
-                    {themeMode === option.id && (
-                      <Ionicons name="checkmark" size={20} color={theme.colors.primary} />
-                    )}
-                  </TouchableOpacity>
+                    right={themeMode === option.id ? <Ionicons name="checkmark" size={20} color={theme.colors.primary} /> : null}
+                  />
                   {index < themeOptions.length - 1 && (
                     <View style={[styles.separator, { backgroundColor: theme.colors.border }]} />
                   )}
                 </React.Fragment>
               ))}
-            </View>
+            </Card>
           </View>
 
           {/* Sezione Schermata Iniziale */}
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: theme.colors.textSecondary }]}>SCHERMATA INIZIALE</Text>
-            <View style={[
-              styles.optionsContainer,
-              {
-                backgroundColor: theme.colors.card,
-                borderColor: theme.colors.border,
-                shadowColor: '#000',
-                shadowOffset: { width: 0, height: theme.isDark ? 0 : 1 },
-                shadowOpacity: theme.isDark ? 0 : 0.03,
-                shadowRadius: theme.isDark ? 0 : 2,
-                elevation: theme.isDark ? 0 : 1,
-              },
-            ]}>
+            <Card style={styles.optionsContainer}>
               {screenOptions.map((option, index) => (
                 <React.Fragment key={option.id}>
-                  <TouchableOpacity
-                    style={styles.optionItem}
-                    onPress={() => setDefaultScreen(option.id)}
-                    activeOpacity={0.6}
-                  >
-                    <View style={styles.optionLeft}>
-                      <Ionicons name={option.icon} size={20} color={theme.colors.text} />
-                      <Text style={[styles.optionLabel, { color: theme.colors.text }]}>{option.label}</Text>
-                    </View>
-                    {defaultScreen === option.id && (
-                      <Ionicons name="checkmark" size={20} color={theme.colors.primary} />
-                    )}
-                  </TouchableOpacity>
+                  <ListRow
+                    icon={option.icon}
+                    title={option.label}
+                    onPress={() => handleDefaultScreenChange(option.id)}
+                    right={
+                      defaultScreen === option.id ? <Ionicons name="checkmark" size={20} color={theme.colors.primary} /> : null
+                    }
+                  />
                   {index < screenOptions.length - 1 && (
                     <View style={[styles.separator, { backgroundColor: theme.colors.border }]} />
                   )}
                 </React.Fragment>
               ))}
-            </View>
+            </Card>
           </View>
 
           {/* Sezione Notifiche */}
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: theme.colors.textSecondary }]}>NOTIFICHE</Text>
-            <View style={[
-              styles.optionsContainer,
-              {
-                backgroundColor: theme.colors.card,
-                borderColor: theme.colors.border,
-                shadowColor: '#000',
-                shadowOffset: { width: 0, height: theme.isDark ? 0 : 1 },
-                shadowOpacity: theme.isDark ? 0 : 0.03,
-                shadowRadius: theme.isDark ? 0 : 2,
-                elevation: theme.isDark ? 0 : 1,
-              },
-            ]}>
-              <View style={styles.optionItem}>
-                <View style={styles.optionLeft}>
-                  <Ionicons name="notifications-outline" size={20} color={theme.colors.text} />
-                  <Text style={[styles.optionLabel, { color: theme.colors.text }]}>Notifiche push</Text>
-                </View>
-                <Switch
-                  value={notificationsEnabled}
-                  onValueChange={setNotificationsEnabled}
-                  trackColor={{ false: theme.colors.border, true: theme.colors.primary }}
-                  thumbColor="#FFFFFF"
-                  ios_backgroundColor={theme.colors.border}
-                />
-              </View>
+            <Card style={styles.optionsContainer}>
+              <ListRow
+                icon="notifications-outline"
+                title="Notifiche"
+                right={<AccentSwitch value={notificationsEnabled} onValueChange={handleNotificationsToggle} />}
+              />
               
               <View style={[styles.separator, { backgroundColor: theme.colors.border }]} />
               
-              <View style={styles.optionItem}>
-                <View style={styles.optionLeft}>
-                  <Ionicons name="radio-outline" size={20} color={theme.colors.text} />
-                  <Text style={[styles.optionLabel, { color: theme.colors.text }]}>Live Activities</Text>
-                </View>
-                <Switch
-                  value={liveActivitiesEnabled}
-                  onValueChange={setLiveActivitiesEnabled}
-                  trackColor={{ false: theme.colors.border, true: theme.colors.primary }}
-                  thumbColor="#FFFFFF"
-                  ios_backgroundColor={theme.colors.border}
-                />
-              </View>
-            </View>
+              <ListRow
+                icon="radio-outline"
+                title="Live Activities"
+                right={<AccentSwitch value={liveActivitiesEnabled} onValueChange={handleLiveActivitiesToggle} />}
+              />
+
+              <View style={[styles.separator, { backgroundColor: theme.colors.border }]} />
+
+              <ListRow
+                icon="train-outline"
+                title="Treni seguiti"
+                onPress={handleClearTrackedTrains}
+                right={<Text style={[styles.optionHint, { color: theme.colors.textSecondary }]}>{trackedTrainsCount}</Text>}
+                showChevron
+              />
+            </Card>
             <Text style={[styles.sectionDescription, { color: theme.colors.textSecondary }]}>
-              Ricevi notifiche push sui ritardi e cambiamenti dei tuoi treni. Live Activities ti mostra i dettagli in tempo reale nella Dynamic Island e nella schermata di blocco.
+              Ricevi notifiche locali sui ritardi e cambiamenti dei tuoi treni. Live Activities ti mostra i dettagli in tempo reale nella Dynamic Island e nella schermata di blocco.
             </Text>
           </View>
 
           {/* Sezione Localizzazione */}
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: theme.colors.textSecondary }]}>LOCALIZZAZIONE</Text>
-            <View style={[
-              styles.optionsContainer,
-              {
-                backgroundColor: theme.colors.card,
-                borderColor: theme.colors.border,
-                shadowColor: '#000',
-                shadowOffset: { width: 0, height: theme.isDark ? 0 : 1 },
-                shadowOpacity: theme.isDark ? 0 : 0.03,
-                shadowRadius: theme.isDark ? 0 : 2,
-                elevation: theme.isDark ? 0 : 1,
-              },
-            ]}>
-              <View style={styles.optionItem}>
-                <View style={styles.optionLeft}>
-                  <Ionicons name="location-outline" size={20} color={theme.colors.text} />
-                  <Text style={[styles.optionLabel, { color: theme.colors.text }]}>Posizione</Text>
-                </View>
-                <Switch
-                  value={locationEnabled}
-                  onValueChange={handleLocationToggle}
-                  trackColor={{ false: theme.colors.border, true: theme.colors.primary }}
-                  thumbColor="#FFFFFF"
-                  ios_backgroundColor={theme.colors.border}
-                />
-              </View>
-            </View>
+            <Card style={styles.optionsContainer}>
+              <ListRow
+                icon="location-outline"
+                title="Posizione"
+                right={<AccentSwitch value={locationEnabled} onValueChange={handleLocationToggle} />}
+              />
+            </Card>
             <Text style={[styles.sectionDescription, { color: theme.colors.textSecondary }]}>
               Consenti l'accesso alla posizione per visualizzare le stazioni più vicine a te nella schermata di ricerca.
             </Text>
@@ -225,79 +305,48 @@ export default function PreferitiScreen() {
           {/* Sezione Info */}
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: theme.colors.textSecondary }]}>INFORMAZIONI</Text>
-            <View style={[
-              styles.optionsContainer,
-              {
-                backgroundColor: theme.colors.card,
-                borderColor: theme.colors.border,
-                shadowColor: '#000',
-                shadowOffset: { width: 0, height: theme.isDark ? 0 : 1 },
-                shadowOpacity: theme.isDark ? 0 : 0.03,
-                shadowRadius: theme.isDark ? 0 : 2,
-                elevation: theme.isDark ? 0 : 1,
-              },
-            ]}>
-              <TouchableOpacity
-                style={styles.optionItem}
+            <Card style={styles.optionsContainer}>
+              <ListRow
+                icon="logo-github"
+                title="Repository GitHub"
                 onPress={() => handleOpenLink('https://github.com/cristianceni5/treninfo')}
-                activeOpacity={0.6}
-              >
-                <View style={styles.optionLeft}>
-                  <Ionicons name="logo-github" size={20} color={theme.colors.text} />
-                  <Text style={[styles.optionLabel, { color: theme.colors.text }]}>Repository GitHub</Text>
-                </View>
-                <Ionicons name="open-outline" size={18} color={theme.colors.textSecondary} />
-              </TouchableOpacity>
+                right={<Ionicons name="open-outline" size={18} color={theme.colors.textSecondary} />}
+              />
               
               <View style={[styles.separator, { backgroundColor: theme.colors.border }]} />
               
-              <TouchableOpacity
-                style={styles.optionItem}
+              <ListRow
+                icon="mail-outline"
+                title="Contatti"
                 onPress={() => handleOpenLink('mailto:cenicristian@yahoo.com')}
-                activeOpacity={0.6}
-              >
-                <View style={styles.optionLeft}>
-                  <Ionicons name="mail-outline" size={20} color={theme.colors.text} />
-                  <Text style={[styles.optionLabel, { color: theme.colors.text }]}>Contatti</Text>
-                </View>
-                <Ionicons name="open-outline" size={18} color={theme.colors.textSecondary} />
-              </TouchableOpacity>
+                right={<Ionicons name="open-outline" size={18} color={theme.colors.textSecondary} />}
+              />
               
               <View style={[styles.separator, { backgroundColor: theme.colors.border }]} />
               
-              <TouchableOpacity
-                style={styles.optionItem}
+              <ListRow
+                icon="chatbubble-outline"
+                title="Feedback"
                 onPress={() => handleOpenLink('https://github.com/cristianceni5/treninfo/issues')}
-                activeOpacity={0.6}
-              >
-                <View style={styles.optionLeft}>
-                  <Ionicons name="chatbubble-outline" size={20} color={theme.colors.text} />
-                  <Text style={[styles.optionLabel, { color: theme.colors.text }]}>Feedback</Text>
-                </View>
-                <Ionicons name="open-outline" size={18} color={theme.colors.textSecondary} />
-              </TouchableOpacity>
+                right={<Ionicons name="open-outline" size={18} color={theme.colors.textSecondary} />}
+              />
               
               <View style={[styles.separator, { backgroundColor: theme.colors.border }]} />
               
-              <TouchableOpacity
-                style={styles.optionItem}
+              <ListRow
+                icon="shield-checkmark-outline"
+                title="Privacy"
                 onPress={() => handleOpenLink('https://github.com/cristianceni5/treninfo/blob/main/PRIVACY.md')}
-                activeOpacity={0.6}
-              >
-                <View style={styles.optionLeft}>
-                  <Ionicons name="shield-checkmark-outline" size={20} color={theme.colors.text} />
-                  <Text style={[styles.optionLabel, { color: theme.colors.text }]}>Privacy</Text>
-                </View>
-                <Ionicons name="open-outline" size={18} color={theme.colors.textSecondary} />
-              </TouchableOpacity>
-            </View>
+                right={<Ionicons name="open-outline" size={18} color={theme.colors.textSecondary} />}
+              />
+            </Card>
           </View>
 
           {/* Sezione Powered By */}
           <View style={[styles.section, styles.poweredBySection]}>
             <Text style={[styles.poweredByText, { color: theme.colors.textSecondary }]}>Powered by</Text>
             <TouchableOpacity
-              onPress={() => handleOpenLink('https://www.treninfo.netlify.app.')}
+              onPress={() => handleOpenLink('https://treninfo.netlify.app')}
               activeOpacity={0.6}
             >
               <Text style={[styles.linkText, { color: theme.colors.primary }]}>treninfo.netlify.app</Text>
@@ -319,70 +368,69 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   section: {
-    marginTop: 32,
-    paddingHorizontal: 16,
+    marginTop: SPACING.screenTop,
+    paddingHorizontal: SPACING.screenX,
   },
   sectionTitle: {
-    fontSize: 13,
-    fontFamily: 'TikTokSans-SemiBold',
-    marginBottom: 8,
-    marginLeft: 16,
+    ...TYPE.sectionLabel,
+    marginBottom: SPACE.sm,
+    marginLeft: SPACING.sectionX,
   },
   sectionDescription: {
-    fontSize: 13,
-    fontFamily: 'TikTokSans-Regular',
-    marginTop: 8,
-    marginHorizontal: 16,
-    lineHeight: 18,
+    ...TYPE.caption,
+    marginTop: SPACE.sm,
+    marginHorizontal: SPACING.sectionX,
   },
   optionsContainer: {
-    borderRadius: 12,
-    borderWidth: 1,
+    borderRadius: RADIUS.card,
+    borderWidth: BORDER.card,
     overflow: 'hidden',
   },
   singleOptionContainer: {
-    borderRadius: 12,
-    borderWidth: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
+    borderRadius: RADIUS.card,
+    borderWidth: BORDER.card,
+    paddingVertical: SPACE.md,
+    paddingHorizontal: SPACE.lg,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginTop: 8,
+    marginTop: SPACE.sm,
   },
   optionItem: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
+    paddingVertical: SPACE.md,
+    paddingHorizontal: SPACE.lg,
   },
   optionLeft: {
     flexDirection: 'row',
     alignItems: 'center',
   },
   optionLabel: {
-    fontSize: 16,
-    fontFamily: 'TikTokSans-Regular',
-    marginLeft: 12,
+    ...TYPE.body,
+    marginLeft: SPACE.md,
+  },
+  optionHint: {
+    ...TYPE.bodySemibold,
   },
   separator: {
-    height: 0.5,
-    marginLeft: 48,
+    height: BORDER.hairline,
+    marginLeft: INSETS.settingsDividerLeft,
   },
   colorGrid: {
-    borderRadius: 12,
-    borderWidth: 1,
-    padding: 16,
+    borderRadius: RADIUS.card,
+    borderWidth: BORDER.card,
+    padding: SPACE.lg,
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
-    marginTop: 8,
+    marginTop: SPACE.sm,
   },
   colorOption: {
     alignItems: 'center',
     width: '30%',
-    marginBottom: 16,
+    marginBottom: SPACE.lg,
   },
   colorCircle: {
     width: 48,
@@ -390,30 +438,28 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 6,
+    marginBottom: SPACE.sm,
   },
   colorLabel: {
-    fontSize: 13,
-    fontFamily: 'TikTokSans-Regular',
+    ...TYPE.caption,
   },
   poweredBySection: {
     alignItems: 'center',
-    marginTop: 40,
-    marginBottom: 40,
+    marginTop: SPACE.xxl,
+    marginBottom: SPACE.xxl,
   },
   poweredByText: {
-    fontSize: 13,
-    fontFamily: 'TikTokSans-Regular',
-    marginBottom: 4,
+    ...TYPE.caption,
+    marginBottom: SPACE.xs,
   },
   linkText: {
-    fontSize: 15,
-    fontFamily: 'TikTokSans-SemiBold',
-    marginBottom: 8,
+    ...TYPE.subheadlineMedium,
+    fontFamily: TYPE.bodySemibold.fontFamily,
+    marginBottom: SPACE.sm,
   },
   versionText: {
-    fontSize: 12,
-    fontFamily: 'TikTokSans-Regular',
-    marginTop: 4,
+    ...TYPE.pill,
+    fontFamily: TYPE.caption.fontFamily,
+    marginTop: SPACE.xs,
   },
 });

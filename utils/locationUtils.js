@@ -1,5 +1,8 @@
 // Calcola la distanza tra due coordinate usando la formula di Haversine
 export const calculateDistance = (lat1, lon1, lat2, lon2) => {
+  if (![lat1, lon1, lat2, lon2].every((v) => typeof v === 'number' && Number.isFinite(v))) {
+    return Number.POSITIVE_INFINITY;
+  }
   const R = 6371; // Raggio della Terra in km
   const dLat = (lat2 - lat1) * Math.PI / 180;
   const dLon = (lon2 - lon1) * Math.PI / 180;
@@ -17,11 +20,16 @@ export const calculateDistance = (lat1, lon1, lat2, lon2) => {
 
 // Trova le stazioni vicine alla posizione dell'utente
 export const getNearbyStations = (userLat, userLon, allStations, maxDistance = 50, limit = 5) => {
+  if (![userLat, userLon].every((v) => typeof v === 'number' && Number.isFinite(v))) return [];
+  const list = Array.isArray(allStations) ? allStations : [];
+
   // Calcola la distanza per ogni stazione
-  const stationsWithDistance = allStations.map(station => ({
-    ...station,
-    distance: calculateDistance(userLat, userLon, station.lat, station.lon)
-  }));
+  const stationsWithDistance = list
+    .filter((station) => typeof station?.lat === 'number' && Number.isFinite(station.lat) && typeof station?.lon === 'number' && Number.isFinite(station.lon))
+    .map(station => ({
+      ...station,
+      distance: calculateDistance(userLat, userLon, station.lat, station.lon)
+    }));
   
   // Filtra per distanza massima, ordina per distanza e limita i risultati
   return stationsWithDistance
@@ -32,6 +40,7 @@ export const getNearbyStations = (userLat, userLon, allStations, maxDistance = 5
 
 // Formatta la distanza per la visualizzazione
 export const formatDistance = (distanceInKm) => {
+  if (typeof distanceInKm !== 'number' || !Number.isFinite(distanceInKm)) return '—';
   if (distanceInKm < 1) {
     return `${Math.round(distanceInKm * 1000)} m`;
   } else {
