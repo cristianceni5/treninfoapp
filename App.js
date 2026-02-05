@@ -1,6 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { DarkTheme as NavigationDarkTheme, DefaultTheme as NavigationDefaultTheme, NavigationContainer } from '@react-navigation/native';
+import {
+  DarkTheme as NavigationDarkTheme,
+  DefaultTheme as NavigationDefaultTheme,
+  NavigationContainer,
+  getFocusedRouteNameFromRoute,
+} from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import * as Font from 'expo-font';
@@ -12,20 +18,55 @@ import AnimatedTabIcon from './components/AnimatedTabIcon';
 import CercaTrenoScreen from './screens/CercaTrenoScreen';
 import CercaStazioneScreen from './screens/CercaStazioneScreen';
 import OrariScreen from './screens/OrariScreen';
-import PreferitiScreen from './screens/PreferitiScreen';
-import { initializeNotifications } from './services/notificationsService';
-import { getNotificationsEnabled } from './services/settingsService';
-import { getTrackedTrains } from './services/trainTrackingService';
-import { ensureTrainTrackingTaskRegistered, unregisterTrainTrackingTask } from './services/trainTrackingTask';
-import { isExpoGo } from './services/runtimeEnv';
-import { FONTS } from './utils/uiTokens';
-// `trainTrackingTask` definisce il task al top-level (TaskManager richiede defineTask fuori dai componenti).
+import ImpostazioniScreen from './screens/ImpostazioniScreen';
+import AltroScreen from './screens/AltroScreen';
+import InfoScreen from './screens/InfoScreen';
+import NewsScreen from './screens/NewsScreen';
+import NovitaScreen from './screens/NovitaScreen';
+import { FONTS, SPACE } from './utils/uiTokens';
+import {
+  Manrope_400Regular,
+  Manrope_500Medium,
+  Manrope_600SemiBold,
+  Manrope_700Bold,
+  Manrope_800ExtraBold,
+} from '@expo-google-fonts/manrope';
 
 if (typeof SplashScreen?.preventAutoHideAsync === 'function') {
   SplashScreen.preventAutoHideAsync().catch(() => {});
 }
 
 const Tab = createBottomTabNavigator();
+const AltroStackNav = createNativeStackNavigator();
+
+function AltroStack() {
+  const { theme } = useTheme();
+
+  return (
+    <AltroStackNav.Navigator
+      screenOptions={{
+        headerTransparent: true,
+        headerStyle: { backgroundColor: 'transparent' },
+        headerShadowVisible: false,
+        headerTintColor: theme.colors.text,
+        headerTitleStyle: { fontFamily: FONTS.semibold },
+        contentStyle: { backgroundColor: theme.colors.background },
+        headerBackTitleVisible: false,
+        animation: 'slide_from_right',
+      }}
+    >
+      <AltroStackNav.Screen
+        name="AltroHome"
+        component={AltroScreen}
+        options={{ title: 'Altro', headerShown: false }}
+      />
+      <AltroStackNav.Screen name="Impostazioni" component={ImpostazioniScreen} options={{ title: 'Impostazioni' }} />
+      <AltroStackNav.Screen name="Info" component={InfoScreen} options={{ title: 'Info' }} />
+      <AltroStackNav.Screen name="News" component={NewsScreen} options={{ title: 'News e infomobilità' }} />
+      <AltroStackNav.Screen name="Novita" component={NovitaScreen} options={{ title: 'Novità' }} />
+    </AltroStackNav.Navigator>
+  );
+}
 
 function resolveInitialRouteName(defaultScreenId) {
   const id = String(defaultScreenId || '').trim();
@@ -33,6 +74,79 @@ function resolveInitialRouteName(defaultScreenId) {
   if (id === 'station') return 'CercaStazione';
   if (id === 'orari' || id === 'solutions') return 'Orari';
   return 'Orari';
+}
+
+function Tabs({ initialRouteName }) {
+  const { theme } = useTheme();
+  const tabBarStyleBase = {
+    backgroundColor: theme.colors.card,
+    borderTopColor: theme.colors.border,
+    borderTopWidth: 1,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
+  };
+
+  return (
+    <Tab.Navigator
+      initialRouteName={initialRouteName}
+      lazy={false}
+      detachInactiveScreens={false}
+      screenOptions={({ route }) => ({
+        tabBarIcon: ({ focused, color, size }) => {
+          let iconName;
+
+          if (route.name === 'CercaTreno') {
+            iconName = 'train-outline';
+          } else if (route.name === 'CercaStazione') {
+            iconName = 'location-outline';
+          } else if (route.name === 'Orari') {
+            iconName = 'time-outline';
+          } else if (route.name === 'Altro') {
+            iconName = 'ellipsis-horizontal-circle-outline';
+          }
+
+          return <AnimatedTabIcon name={iconName} size={size} color={color} focused={focused} />;
+        },
+        tabBarActiveTintColor: theme.colors.primary,
+        tabBarInactiveTintColor: theme.colors.textSecondary,
+        headerShown: false,
+        sceneContainerStyle: { backgroundColor: theme.colors.background },
+        tabBarStyle: tabBarStyleBase,
+        tabBarLabelStyle: {
+          fontFamily: FONTS.medium,
+          marginTop: SPACE.xxs,
+        },
+      })}
+    >
+      <Tab.Screen
+        name="Orari"
+        component={OrariScreen}
+        options={{ title: 'Orari' }}
+      />
+      <Tab.Screen
+        name="CercaTreno"
+        component={CercaTrenoScreen}
+        options={{ title: 'Treni' }}
+      />
+      <Tab.Screen
+        name="CercaStazione"
+        component={CercaStazioneScreen}
+        options={{ title: 'Stazioni' }}
+      />
+      <Tab.Screen
+        name="Altro"
+        component={AltroStack}
+        options={({ route }) => {
+          const routeName = getFocusedRouteNameFromRoute(route) ?? 'AltroHome';
+          return {
+            title: 'Altro',
+            tabBarStyle: routeName === 'AltroHome' ? tabBarStyleBase : { display: 'none' },
+          };
+        }}
+      />
+    </Tab.Navigator>
+  );
 }
 
 function MainApp({ initialRouteName }) {
@@ -57,62 +171,7 @@ function MainApp({ initialRouteName }) {
     <SafeAreaProvider style={{ flex: 1, backgroundColor: theme.colors.background }}>
       <NavigationContainer theme={navigationTheme}>
         <StatusBar style={isDark ? 'light' : 'dark'} />
-        <Tab.Navigator
-          initialRouteName={initialRouteName}
-          screenOptions={({ route }) => ({
-            tabBarIcon: ({ focused, color, size }) => {
-              let iconName;
-
-              if (route.name === 'CercaTreno') {
-                iconName = 'train-outline';
-              } else if (route.name === 'CercaStazione') {
-                iconName = 'location-outline';
-              } else if (route.name === 'Orari') {
-                iconName = 'time-outline';
-              } else if (route.name === 'Preferiti') {
-                iconName = 'settings-outline';
-              }
-
-              return <AnimatedTabIcon name={iconName} size={size} color={color} focused={focused} />;
-            },
-            tabBarActiveTintColor: theme.colors.primary,
-            tabBarInactiveTintColor: theme.colors.textSecondary,
-            headerShown: false,
-            sceneContainerStyle: { backgroundColor: theme.colors.background },
-            tabBarStyle: {
-              backgroundColor: theme.colors.card,
-              borderTopColor: theme.colors.border,
-              borderTopWidth: 1,
-              shadowOpacity: 0,
-              shadowRadius: 0,
-              elevation: 0,
-            },
-            tabBarLabelStyle: {
-              fontFamily: FONTS.medium,
-            },
-          })}
-	        >
-	          <Tab.Screen
-	            name="Orari"
-	            component={OrariScreen}
-	            options={{ title: 'Orari' }}
-	          />
-	          <Tab.Screen 
-	            name="CercaTreno" 
-	            component={CercaTrenoScreen}
-	            options={{ title: 'Treni' }}
-	          />
-	          <Tab.Screen 
-	            name="CercaStazione" 
-	            component={CercaStazioneScreen}
-	            options={{ title: 'Stazioni' }}
-	          />
-	          <Tab.Screen 
-	            name="Preferiti" 
-	            component={PreferitiScreen}
-	            options={{ title: 'Impostazioni' }}
-	          />
-	        </Tab.Navigator>
+        <Tabs initialRouteName={initialRouteName} />
       </NavigationContainer>
     </SafeAreaProvider>
   );
@@ -125,28 +184,16 @@ export default function App() {
   useEffect(() => {
     async function prepare() {
       try {
-        await initializeNotifications();
-
         await Font.loadAsync({
-          'TikTokSans-Light': require('./assets/fonts/TikTokSans_24pt-Light.ttf'),
-          'TikTokSans-Regular': require('./assets/fonts/TikTokSans_24pt-Regular.ttf'),
-          'TikTokSans-Medium': require('./assets/fonts/TikTokSans_24pt-Medium.ttf'),
-          'TikTokSans-SemiBold': require('./assets/fonts/TikTokSans_24pt-SemiBold.ttf'),
-          'TikTokSans-Bold': require('./assets/fonts/TikTokSans_24pt-Bold.ttf'),
+          Manrope_400Regular,
+          Manrope_500Medium,
+          Manrope_600SemiBold,
+          Manrope_700Bold,
+          Manrope_800ExtraBold,
         });
 
         const storedDefaultScreen = await AsyncStorage.getItem('defaultScreen');
         setInitialRouteName(resolveInitialRouteName(storedDefaultScreen));
-
-        if (!isExpoGo()) {
-          const notificationsEnabled = await getNotificationsEnabled();
-          const tracked = await getTrackedTrains();
-          if (notificationsEnabled && Array.isArray(tracked) && tracked.length > 0) {
-            await ensureTrainTrackingTaskRegistered();
-          } else {
-            await unregisterTrainTrackingTask();
-          }
-        }
       } catch (e) {
         console.warn(e);
       } finally {

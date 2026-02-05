@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { Animated } from 'react-native';
+import { Animated, Easing } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 export default function AnimatedTabIcon({ name, size, color, focused }) {
@@ -10,12 +10,14 @@ export default function AnimatedTabIcon({ name, size, color, focused }) {
     Animated.parallel([
       Animated.timing(scaleValue, {
         toValue: focused ? 1 : 0.95,
-        duration: 150,
+        duration: 170,
+        easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
       Animated.timing(opacityValue, {
         toValue: focused ? 1 : 0.85,
-        duration: 150,
+        duration: 170,
+        easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
     ]).start();

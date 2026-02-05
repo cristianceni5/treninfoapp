@@ -15,8 +15,8 @@ const hexToRgba = (hex, alpha) => {
 };
 
 export default function ModernSpinner({
-  size = 26,
-  thickness = 3,
+  size = 20,
+  thickness = 2,
   color = COLORS.accent,
   trackColor,
   style,
@@ -44,10 +44,10 @@ export default function ModernSpinner({
   });
 
   const outer = Math.max(12, Number(size) || 26);
-  const ring = Math.max(2, Number(thickness) || 3);
+  const ring = Math.max(2, Number(thickness) || 2);
   const c = String(color || COLORS.accent).trim();
-  const track = trackColor || hexToRgba(c, 0.18);
-  const tail = hexToRgba(c, 0.35);
+  const track = trackColor || hexToRgba(c, 0.12);
+  const tail = hexToRgba(c, 0.28);
 
   return (
     <Animated.View style={[{ width: outer, height: outer, transform: [{ rotate }] }, style]}>

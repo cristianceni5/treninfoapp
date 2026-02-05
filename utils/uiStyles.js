@@ -39,3 +39,68 @@ export function iconButtonShadow(theme) {
     elevation,
   };
 }
+
+export function getTrainSiglaColor(sigla, theme) {
+  const ref = String(sigla || '').trim().toUpperCase();
+  if (ref.startsWith('FR') || ref.startsWith('FA')) return '#E20613';
+  if (ref.startsWith('ITA') || ref.startsWith('ITALO')) return '#9C1A39';
+  if (ref.startsWith('ICN') || ref.startsWith('EN')) return '#0D47A1';
+  if (ref.startsWith('FB') || ref.startsWith('IC') || ref.startsWith('EC')) return '#2196F3';
+  if (ref.startsWith('REG') || ref.startsWith('REGIONALE')) return theme?.colors?.textSecondary || '#5E6E7A';
+  return theme?.isDark ? theme?.colors?.text || '#FFFFFF' : '#000000';
+}
+
+const TRAIN_TYPE_CODES = new Set([
+  'FR',
+  'FA',
+  'IC',
+  'ICN',
+  'EC',
+  'EN',
+  'FB',
+  'REG',
+  'REGIONALE',
+  'RV',
+  'R',
+  'ITA',
+  'ITALO',
+  'AV',
+]);
+
+const normalizeToken = (value) => String(value || '').trim();
+const normalizeUpper = (value) => normalizeToken(value).toUpperCase();
+
+const isLikelyOperatorToken = (token, nextToken) => {
+  const code = normalizeUpper(token);
+  if (!code) return false;
+  if (!/^[A-Z]{2,3}$/.test(code)) return false;
+  if (TRAIN_TYPE_CODES.has(code)) return false;
+  const next = normalizeUpper(nextToken);
+  if (!next) return false;
+  return TRAIN_TYPE_CODES.has(next);
+};
+
+export function getTrainTitleParts(type, number, operator) {
+  const rawType = typeof type === 'string' ? type.trim() : '';
+  let tokens = rawType.split(/\s+/).filter(Boolean);
+  let operatorLabel = normalizeUpper(operator);
+
+  if (!operatorLabel && tokens.length >= 2 && isLikelyOperatorToken(tokens[0], tokens[1])) {
+    operatorLabel = normalizeUpper(tokens[0]);
+    tokens = tokens.slice(1);
+  } else if (operatorLabel && tokens.length >= 2 && normalizeUpper(tokens[0]) === operatorLabel) {
+    tokens = tokens.slice(1);
+  }
+
+  const siglaRaw = tokens[0] || rawType;
+  const siglaUpper = siglaRaw.toUpperCase();
+  const sigla = siglaUpper.startsWith('REGIONALE') || siglaUpper === 'REG' ? 'REG' : siglaUpper;
+  const showAv = tokens.some((t) => normalizeUpper(t) === 'AV');
+  const num =
+    typeof number === 'string'
+      ? number.trim()
+      : number !== null && number !== undefined
+        ? String(number).trim()
+        : '';
+  return { operator: operatorLabel || null, sigla, showAv, number: num };
+}

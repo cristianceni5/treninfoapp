@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -6,31 +6,33 @@ import {
   ScrollView,
   TouchableOpacity,
   Modal,
-  TextInput,
   Animated,
   Alert,
   LayoutAnimation,
+  InteractionManager,
   Platform,
   UIManager,
-  Linking,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import * as Haptics from 'expo-haptics';
 import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
-import * as Location from 'expo-location';
 import { useTheme } from '../context/ThemeContext';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import AnimatedScreen from '../components/AnimatedScreen';
+import SectionPlaceholderCard from '../components/SectionPlaceholderCard';
+import SectionSkeleton from '../components/SectionSkeleton';
 import SwipeableRow from '../components/SwipeableRow';
-import ModernSpinner from '../components/ModernSpinner';
-import EdgeFade from '../components/EdgeFade';
+import AccentSwitch from '../components/AccentSwitch';
 import { BORDER, HIT_SLOP, INSETS, RADIUS, SPACING, SPACE, TYPE } from '../utils/uiTokens';
 import { cardShadow, floatingShadow, iconButtonShadow } from '../utils/uiStyles';
 import { getTravelSolutions } from '../services/apiService';
-import { getAllStations, getStationByName, searchStations } from '../services/stationsService';
-import { getRegionName } from '../utils/regionLabels';
-import { formatDistance, getNearbyStations } from '../utils/locationUtils';
-import { getRecentStations, saveRecentStation } from '../services/recentStationsService';
+import { getStationByName } from '../services/stationsService';
+import { hapticImpact, hapticSelection, hapticModalClose, hapticModalOpen, ImpactFeedbackStyle } from '../utils/haptics';
+import { formatItDateTime, parseDateTime, toYmd } from '../utils/formatters';
+import useTravelSolutions from '../hooks/useTravelSolutions';
+import { enrichStation } from '../utils/stationsFormat';
+import StationSearchModal from '../components/StationSearchModal';
+import SolutionsModal from '../components/SolutionsModal';
 import {
   clearRecentSolutions,
   getRecentSolutions,
@@ -39,127 +41,32 @@ import {
   saveRecentSolution,
 } from '../services/recentSolutionsService';
 
-const hapticSelection = () => {
-  try {
-    Haptics.selectionAsync();
-  } catch {
-    // ignore
-  }
+const EXPAND_ANIMATION = {
+  duration: 200,
+  update: { type: LayoutAnimation.Types.easeInEaseOut },
+  create: { type: LayoutAnimation.Types.easeInEaseOut, property: LayoutAnimation.Properties.scaleY },
+  delete: { type: LayoutAnimation.Types.easeInEaseOut, property: LayoutAnimation.Properties.scaleY },
+};
+const ALLOW_MODAL_TO_MODAL_NAV = false;
+const MODAL_HEADER_BUTTON_SIZE = 36;
+const MODAL_TOP_SPACER_HEIGHT = MODAL_HEADER_BUTTON_SIZE + SPACE.xl;
+const MODAL_HEADER_TOP_OFFSET = SPACING.screenX;
+const SOLUTION_STOP = {
+  indicatorWidth: 20,
+  dotSize: 12,
+  lineWidth: 2,
+  rowHeight: 32,
+  lineGap: 4,
+  timeWidth: 56,
+  dotOffsetY: -1,
 };
 
-const hapticImpact = (style = Haptics.ImpactFeedbackStyle.Light) => {
-  try {
-    Haptics.impactAsync(style);
-  } catch {
-    // ignore
-  }
-};
-
-const pad2 = (n) => String(Number(n) || 0).padStart(2, '0');
-
-const parseDateTime = (input) => {
-  if (input instanceof Date) return input;
-  const str = String(input || '').trim();
-  if (!str) return new Date('');
-
-  // Se presente timezone esplicito (Z / +01:00 / +0100), affidiamoci al parser nativo
-  // così l'ora e il giorno vengono convertiti correttamente in locale (es. attraversamento mezzanotte).
-  if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(str)) return new Date(str);
-
-  // ISO senza timezone: trattalo come locale (consistente con la UX in Italia).
-  const m = str.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
-  if (m) {
-    const [, yy, mm, dd, hh, mi] = m;
-    return new Date(Number(yy), Number(mm) - 1, Number(dd), Number(hh), Number(mi), 0, 0);
-  }
-
-  return new Date(str);
-};
-
-const toYmd = (date) => {
-  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
-  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
-};
-
-const toHm = (date) => {
-  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
-  return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
-};
-
-const formatItDateTime = (date) => {
-  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '—';
-  try {
-    const d = new Intl.DateTimeFormat('it-IT', { day: '2-digit', month: '2-digit', year: '2-digit' }).format(date);
-    const t = new Intl.DateTimeFormat('it-IT', { hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
-    return `${d} - ${t}`;
-  } catch {
-    return `${pad2(date.getDate())}/${pad2(date.getMonth() + 1)}/${String(date.getFullYear()).slice(-2)} - ${toHm(date)}`;
-  }
-};
-
-const formatItTime = (value) => {
-  if (!value) return '—';
-  const date = parseDateTime(value);
-  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '—';
-  try {
-    return new Intl.DateTimeFormat('it-IT', { hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
-  } catch {
-    return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
-  }
-};
-
-const formatItLongDate = (value) => {
-  const date = value instanceof Date ? value : new Date(value);
-  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '—';
-  try {
-    const raw = new Intl.DateTimeFormat('it-IT', {
-      weekday: 'long',
-      day: '2-digit',
-      month: 'long',
-      year: 'numeric',
-    }).format(date);
-    return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : '—';
-  } catch {
-    return '—';
-  }
-};
-
-const formatDurationMinutes = (mins) => {
-  const m = Number(mins);
-  if (!Number.isFinite(m) || m <= 0) return null;
-  const hours = Math.floor(m / 60);
-  const minutes = Math.round(m % 60);
-  if (hours <= 0) return `${minutes} min`;
-  if (minutes === 0) return `${hours} h`;
-  return `${hours} h ${pad2(minutes)} min`;
-};
-
-const formatEuro = (amount, currency = '€') => {
-  const n = Number(amount);
-  if (!Number.isFinite(n)) return '—';
-  const fixed = n.toFixed(2);
-  return `${currency} ${fixed.replace('.', ',')}`;
-};
-
-const minutesBetween = (fromIso, toIso) => {
-  if (!fromIso || !toIso) return null;
-  const a = parseDateTime(fromIso);
-  const b = parseDateTime(toIso);
-  if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) return null;
-  const diff = Math.round((b.getTime() - a.getTime()) / 60000);
-  if (!Number.isFinite(diff)) return null;
-  return Math.max(0, diff);
-};
-
-const getCalendarDayIndex = (d) => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
-
-const getDayDelta = (from, to) => {
-  if (!(from instanceof Date) || Number.isNaN(from.getTime())) return 0;
-  if (!(to instanceof Date) || Number.isNaN(to.getTime())) return 0;
-  const a = getCalendarDayIndex(from);
-  const b = getCalendarDayIndex(to);
-  const diff = Math.round((b - a) / 86400000);
-  return Number.isFinite(diff) ? diff : 0;
+const getDefaultWhen = () => {
+  const d = new Date();
+  d.setMinutes(Math.ceil(d.getMinutes() / 5) * 5);
+  d.setSeconds(0);
+  d.setMilliseconds(0);
+  return d;
 };
 
 function normalizeAutocompleteItem(item) {
@@ -183,412 +90,42 @@ function normalizeAutocompleteItem(item) {
   return null;
 }
 
-function enrichStation(station) {
-  if (!station?.name) return station;
-  const local = getStationByName(station.name);
-  const regionCode = local?.region ?? local?.regione ?? null;
-  const region = regionCode ? getRegionName(regionCode) : null;
-  const lefrecceId =
-    (local?.lefrecceId !== null && local?.lefrecceId !== undefined ? local.lefrecceId : null) ??
-    (station?.lefrecceId !== null && station?.lefrecceId !== undefined ? station.lefrecceId : null);
-  return { ...station, region, lefrecceId };
-}
-
-function toPickerStation(station) {
-  if (!station?.name) return null;
-  const name = String(station.name).trim();
-  if (!name) return null;
-  const local = getStationByName(name);
-  const regionCode = local?.region ?? station?.region ?? station?.regione ?? null;
-  const region = regionCode ? getRegionName(regionCode) : null;
-  const lefrecceId = local?.lefrecceId ?? null;
-  return { name, id: null, region, lefrecceId };
-}
-
-function StationSearchModal({ visible, title, onClose, onSelect }) {
+function DateTimeModal({ visible, value, onClose, onConfirm, modalHeaderTop, modalTopSpacerHeight }) {
   const { theme } = useTheme();
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState([]);
-  const [error, setError] = useState('');
-  const [recentStations, setRecentStations] = useState([]);
-  const [nearbyStations, setNearbyStations] = useState([]);
-  const [locationPermission, setLocationPermission] = useState(null);
-  const [loadingLocation, setLoadingLocation] = useState(false);
-  const debounceRef = useRef(null);
-
-  const loadRecents = async () => {
-    const list = await getRecentStations(5);
-    setRecentStations(Array.isArray(list) ? list : []);
-  };
-
-  const openAppSettings = async () => {
-    try {
-      await Linking.openSettings();
-    } catch (e) {
-      console.warn('Errore nell’aprire le Impostazioni:', e?.message || e);
+  const resolveDraft = (nextValue) => {
+    if (nextValue instanceof Date && !Number.isNaN(nextValue.getTime())) {
+      return new Date(nextValue);
     }
+    return getDefaultWhen();
   };
-
-  const getUserLocationAndNearby = async () => {
-    try {
-      setLoadingLocation(true);
-      const location = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
-      const allStations = getAllStations();
-      const nearby = getNearbyStations(
-        location.coords.latitude,
-        location.coords.longitude,
-        allStations,
-        50,
-        5
-      );
-      setNearbyStations(Array.isArray(nearby) ? nearby : []);
-    } catch (e) {
-      setNearbyStations([]);
-    } finally {
-      setLoadingLocation(false);
-    }
-  };
-
-  const initLocation = async () => {
-    try {
-      const { status } = await Location.getForegroundPermissionsAsync();
-      const granted = status === 'granted';
-      setLocationPermission(granted);
-      if (granted) {
-        await getUserLocationAndNearby();
-      } else {
-        setNearbyStations([]);
-      }
-    } catch {
-      setLocationPermission(false);
-      setNearbyStations([]);
-    }
-  };
-
-  const requestLocationPermission = async () => {
-    try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      const granted = status === 'granted';
-      setLocationPermission(granted);
-      if (granted) {
-        await getUserLocationAndNearby();
-      } else {
-        setNearbyStations([]);
-      }
-    } catch {
-      setLocationPermission(false);
-      setNearbyStations([]);
-    }
-  };
-
-  const handlePickStation = async (stationLike) => {
-    const picked = toPickerStation(stationLike) || toPickerStation(enrichStation(stationLike));
-    if (!picked) return;
-    hapticSelection();
-    onSelect?.(picked);
-
-    // Salviamo la stazione (se la troviamo nel dataset locale) come "recente"
-    const local = getStationByName(picked.name);
-    if (local) {
-      await saveRecentStation(local);
-      await loadRecents();
-    }
-
-    onClose?.();
-  };
+  const [draft, setDraft] = useState(() => resolveDraft(value));
 
   useEffect(() => {
     if (!visible) return;
-    setQuery('');
-    setResults([]);
-    setError('');
-    setLocationPermission(null);
-    setLoadingLocation(false);
-    setNearbyStations([]);
-    loadRecents();
-    initLocation();
-  }, [visible]);
-
-  useEffect(() => {
-    if (!visible) return;
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-
-    const q = query.trim();
-    if (q.length < 2) {
-      setError('');
-      setResults([]);
-      return;
-    }
-
-    debounceRef.current = setTimeout(async () => {
-      setError('');
-      const localResults = searchStations(q, 20);
-      const normalized = Array.isArray(localResults) ? localResults.map((s) => toPickerStation(s)).filter(Boolean) : [];
-      setResults(normalized);
-      if (normalized.length === 0) setError('Nessun risultato');
-    }, 250);
-
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-    };
-  }, [query, visible]);
-
-  const renderStationTile = (item, { subtitle, icon = 'location-outline', rightText = null } = {}) => (
-    <TouchableOpacity
-      key={`${item?.name}-${String(item?.id ?? '')}`}
-      style={styles.stationTile}
-      activeOpacity={0.6}
-      onPress={() => handlePickStation(item)}
-    >
-      <View style={styles.stationTileContent}>
-        <View style={styles.stationTileIcon}>
-          <Ionicons name={icon} size={20} color={theme.colors.text} />
-        </View>
-        <View style={styles.stationTileText}>
-          <Text style={[styles.stationTileTitle, { color: theme.colors.text }]} numberOfLines={1}>
-            {item?.name || '—'}
-          </Text>
-          {subtitle ? (
-            <Text style={[styles.stationTileSubtitle, { color: theme.colors.textSecondary }]} numberOfLines={1}>
-              {subtitle}
-              {rightText ? <Text style={{ color: theme.colors.accent }}>{`  ${rightText}`}</Text> : null}
-            </Text>
-          ) : null}
-        </View>
-        <Ionicons name="chevron-forward" size={18} color={theme.colors.textSecondary} style={{ opacity: 0.5 }} />
-      </View>
-    </TouchableOpacity>
-  );
-
-  return (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <SafeAreaView style={[styles.modalContainer, { backgroundColor: theme.colors.background }]}>
-        <View style={styles.modalHeader}>
-          <TouchableOpacity
-            style={[styles.closeButton, { backgroundColor: theme.colors.card, borderColor: theme.colors.border, borderWidth: BORDER.card }]}
-            onPress={onClose}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="close" size={20} color={theme.colors.text} />
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.modalTopSpacer} />
-
-        <View style={[styles.stationModalContentWrap, styles.modalScrollArea]}>
-          <ScrollView
-            showsVerticalScrollIndicator={false}
-            keyboardShouldPersistTaps="handled"
-            contentContainerStyle={{ paddingBottom: 24 }}
-          >
-            <Text style={[styles.modalTitle, { color: theme.colors.text }]}>{title}</Text>
-
-            <View style={[styles.searchBar, styles.stationSearchBar, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }, cardShadow(theme)]}>
-              <Ionicons name="search-outline" size={20} color={theme.colors.textSecondary} />
-              <TextInput
-                style={[styles.searchInput, { color: theme.colors.text }]}
-                placeholder="Scrivi almeno 2 lettere"
-                placeholderTextColor={theme.colors.textSecondary}
-                value={query}
-                onChangeText={setQuery}
-                autoFocus={false}
-                autoCorrect={false}
-                autoCapitalize="words"
-                clearButtonMode="while-editing"
-                returnKeyType="search"
-              />
-            </View>
-
-            {(query.trim().length >= 2 || error) && (
-              <>
-                <Text style={[styles.modalSectionTitle, { color: theme.colors.textSecondary }]}>RISULTATI</Text>
-                <View style={[styles.stationResultsContainer, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }, cardShadow(theme)]}>
-                  {results.length > 0 ? (
-                    <ScrollView nestedScrollEnabled style={{ maxHeight: 220 }} showsVerticalScrollIndicator={false}>
-                      {results.slice(0, 15).map((item, index) => (
-                        <View key={`${item.name}-${String(item.id ?? index)}`}>
-                          {renderStationTile(item, {
-                            subtitle: item.region || null,
-                            icon: 'location-outline',
-                          })}
-                          {index < Math.min(results.length, 15) - 1 && (
-                            <View style={[styles.stationTileDivider, { backgroundColor: theme.colors.border }]} />
-                          )}
-                        </View>
-                      ))}
-                    </ScrollView>
-                  ) : (
-                    <View style={styles.resultsEmptyState}>
-                      <Text style={[styles.resultsEmptyTitle, { color: theme.colors.text }]}>
-                        {error ? 'Errore' : 'Nessun risultato'}
-                      </Text>
-                      <Text style={[styles.resultsEmptySubtitle, { color: theme.colors.textSecondary }]}>
-                        {error ? error : 'Prova con un nome più lungo (es. “Milano”, “Roma”)'}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-              </>
-            )}
-
-            {query.trim().length > 0 && query.trim().length < 2 ? (
-              <Text style={[styles.searchHint, { color: theme.colors.textSecondary }]}>
-                Scrivi almeno 2 lettere per vedere i risultati.
-              </Text>
-            ) : null}
-
-            {query.trim().length === 0 ? (
-              <>
-                <Text style={[styles.modalSectionTitle, { color: theme.colors.textSecondary }]}>RECENTI</Text>
-                <View style={[styles.tileGroup, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }, cardShadow(theme)]}>
-                  {recentStations.length > 0 ? (
-                    recentStations.map((s, index) => (
-                      <View key={`${s.id}-${index}`}>
-                        {renderStationTile(
-                          { name: s.name, region: s.region },
-                          {
-                            subtitle: s.region ? getRegionName(s.region) : null,
-                            icon: 'location-outline',
-                          }
-                        )}
-                        {index < recentStations.length - 1 && (
-                          <View style={[styles.stationTileDivider, { backgroundColor: theme.colors.border }]} />
-                        )}
-                      </View>
-                    ))
-                  ) : (
-                    <View style={styles.tileEmpty}>
-                      <Text style={[styles.tileEmptyText, { color: theme.colors.textSecondary }]}>Nessuna stazione recente</Text>
-                    </View>
-                  )}
-                </View>
-
-                <Text style={[styles.modalSectionTitle, { color: theme.colors.textSecondary }]}>STAZIONI VICINE</Text>
-                <View style={[styles.tileGroup, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }, cardShadow(theme)]}>
-                  {locationPermission === true ? (
-                    loadingLocation ? (
-                      <View style={styles.resultsLoading}>
-                        <ModernSpinner size={18} thickness={2} color={theme.colors.accent} innerStyle={{ backgroundColor: theme.colors.card }} />
-                        <Text style={[styles.resultsLoadingText, { color: theme.colors.textSecondary }]}>Ricerca in corso…</Text>
-                      </View>
-                    ) : nearbyStations.length > 0 ? (
-                      nearbyStations.map((s, index) => (
-                        <View key={`${s.id}-${index}`}>
-                          {renderStationTile(
-                            { name: s.name, region: s.region },
-                            {
-                              subtitle: s.region ? getRegionName(s.region) : null,
-                              icon: 'location-outline',
-                              rightText: s.distance != null ? `~${formatDistance(s.distance)}` : null,
-                            }
-                          )}
-                          {index < nearbyStations.length - 1 && (
-                            <View style={[styles.stationTileDivider, { backgroundColor: theme.colors.border }]} />
-                          )}
-                        </View>
-                      ))
-                    ) : (
-                      <View style={styles.tileEmpty}>
-                        <Text style={[styles.tileEmptyText, { color: theme.colors.textSecondary }]}>Nessuna stazione nelle vicinanze</Text>
-                      </View>
-                    )
-                  ) : locationPermission === false ? (
-                    <>
-                      <TouchableOpacity style={styles.stationTile} activeOpacity={0.6} onPress={requestLocationPermission}>
-                        <View style={styles.stationTileContent}>
-                          <View style={styles.stationTileIcon}>
-                            <Ionicons name="location" size={20} color={theme.colors.accent} />
-                          </View>
-                          <View style={styles.stationTileText}>
-                            <Text style={[styles.stationTileTitle, { color: theme.colors.accent }]} numberOfLines={1}>
-                              Attiva Servizi di Localizzazione
-                            </Text>
-                            <Text style={[styles.stationTileSubtitle, { color: theme.colors.textSecondary }]} numberOfLines={1}>
-                              Per vedere le stazioni nelle vicinanze
-                            </Text>
-                          </View>
-                          <Ionicons name="chevron-forward" size={18} color={theme.colors.textSecondary} style={{ opacity: 0.5 }} />
-                        </View>
-                      </TouchableOpacity>
-                      <View style={[styles.stationTileDivider, { backgroundColor: theme.colors.border }]} />
-                      <TouchableOpacity style={styles.stationTile} activeOpacity={0.6} onPress={openAppSettings}>
-                        <View style={styles.stationTileContent}>
-                          <View style={styles.stationTileIcon}>
-                            <Ionicons name="settings-outline" size={20} color={theme.colors.text} />
-                          </View>
-                          <View style={styles.stationTileText}>
-                            <Text style={[styles.stationTileTitle, { color: theme.colors.text }]} numberOfLines={1}>
-                              Apri Impostazioni
-                            </Text>
-                            <Text style={[styles.stationTileSubtitle, { color: theme.colors.textSecondary }]} numberOfLines={1}>
-                              Gestisci i permessi di posizione
-                            </Text>
-                          </View>
-                          <Ionicons name="open-outline" size={18} color={theme.colors.textSecondary} style={{ opacity: 0.5 }} />
-                        </View>
-                      </TouchableOpacity>
-                      <View style={[styles.stationTileDivider, { backgroundColor: theme.colors.border }]} />
-                      <TouchableOpacity style={styles.stationTile} activeOpacity={0.6} onPress={requestLocationPermission}>
-                        <View style={styles.stationTileContent}>
-                          <View style={styles.stationTileIcon}>
-                            <Ionicons name="refresh" size={20} color={theme.colors.accent} />
-                          </View>
-                          <View style={styles.stationTileText}>
-                            <Text style={[styles.stationTileTitle, { color: theme.colors.accent }]} numberOfLines={1}>
-                              Riprova permesso
-                            </Text>
-                            <Text style={[styles.stationTileSubtitle, { color: theme.colors.textSecondary }]} numberOfLines={1}>
-                              Richiedi di nuovo l’accesso
-                            </Text>
-                          </View>
-                          <Ionicons name="chevron-forward" size={18} color={theme.colors.textSecondary} style={{ opacity: 0.5 }} />
-                        </View>
-                      </TouchableOpacity>
-                    </>
-                  ) : (
-                    <View style={styles.tileEmpty}>
-                      <Text style={[styles.tileEmptyText, { color: theme.colors.textSecondary }]}>Controllo permessi…</Text>
-                    </View>
-                  )}
-                </View>
-              </>
-            ) : null}
-          </ScrollView>
-
-          <EdgeFade height={SPACE.lg} style={styles.modalTopEdgeFade} />
-        </View>
-      </SafeAreaView>
-    </Modal>
-  );
-}
-
-function DateTimeModal({ visible, value, onClose, onConfirm }) {
-  const { theme } = useTheme();
-  const [draft, setDraft] = useState(value instanceof Date ? value : new Date());
-
-  useEffect(() => {
-    if (!visible) return;
-    setDraft(value instanceof Date ? value : new Date());
+    setDraft(resolveDraft(value));
   }, [visible, value]);
 
-  if (Platform.OS !== 'ios') return null;
+  if (Platform.OS !== 'ios' || !visible) return null;
 
   return (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <SafeAreaView style={[styles.modalContainer, { backgroundColor: theme.colors.background }]}>
-        <View style={styles.modalHeader}>
+    <Modal visible={true} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+      <SafeAreaView edges={['bottom']} style={[styles.modalContainer, { backgroundColor: theme.colors.background }]}>
+        <View style={[styles.modalHeader, { top: modalHeaderTop }]}>
           <TouchableOpacity
-            style={[styles.closeButton, { backgroundColor: theme.colors.card, borderColor: theme.colors.border, borderWidth: BORDER.card }]}
+            style={[
+              styles.closeButton,
+              { backgroundColor: theme.colors.card, borderColor: theme.colors.border, borderWidth: BORDER.card },
+              iconButtonShadow(theme),
+            ]}
             onPress={onClose}
             activeOpacity={0.7}
+            hitSlop={HIT_SLOP.md}
           >
             <Ionicons name="close" size={20} color={theme.colors.text} />
           </TouchableOpacity>
         </View>
 
-        <View style={styles.modalTopSpacer} />
+        <View style={[styles.modalTopSpacer, { height: modalTopSpacerHeight }]} />
 
         <View style={styles.modalContentWrap}>
           <Text style={[styles.modalTitle, { color: theme.colors.text }]}>Data e ora</Text>
@@ -602,6 +139,7 @@ function DateTimeModal({ visible, value, onClose, onConfirm }) {
               mode="datetime"
               display="inline"
               locale="it-IT"
+              accentColor={theme.colors.accent}
               onChange={(_, d) => {
                 if (d instanceof Date) setDraft(d);
               }}
@@ -611,7 +149,7 @@ function DateTimeModal({ visible, value, onClose, onConfirm }) {
           </View>
 
           <TouchableOpacity
-            style={[styles.primaryButton, { backgroundColor: theme.colors.primary }]}
+            style={[styles.primaryButton, { backgroundColor: theme.colors.accent }]}
             activeOpacity={0.8}
             onPress={() => {
               hapticImpact();
@@ -619,387 +157,8 @@ function DateTimeModal({ visible, value, onClose, onConfirm }) {
               onClose?.();
             }}
           >
-            <Text style={styles.primaryButtonText}>Conferma</Text>
+            <Text style={[styles.primaryButtonText, { color: theme.colors.onAccent }]}>Conferma</Text>
           </TouchableOpacity>
-        </View>
-      </SafeAreaView>
-    </Modal>
-  );
-}
-
-function SolutionRow({ item, theme }) {
-  const [expanded, setExpanded] = useState(false);
-
-  const depDate = item?.departureTime ? new Date(item.departureTime) : null;
-  const arrDate = item?.arrivalTime ? new Date(item.arrivalTime) : null;
-  const depText = formatItTime(depDate);
-  const arrTextBase = formatItTime(arrDate);
-  const dayDelta = depDate && arrDate ? getDayDelta(depDate, arrDate) : 0;
-  const arrText = dayDelta > 0 ? `${arrTextBase} (+${dayDelta}g)` : arrTextBase;
-  const arrivalDayLabel = dayDelta > 0 ? (dayDelta === 1 ? 'Arrivo domani' : `Arrivo +${dayDelta}g`) : null;
-
-  const nodes = Array.isArray(item?.nodes) ? item.nodes : [];
-  const changes = Math.max(0, nodes.length - 1);
-  const originStation = String(nodes?.[0]?.origin || '').trim() || '—';
-  const destinationStation = String(nodes?.[nodes.length - 1]?.destination || '').trim() || '—';
-  const duration =
-    typeof item?.duration === 'string' && item.duration.trim()
-      ? item.duration.trim()
-      : formatDurationMinutes(item?.duration);
-  const priceAmount = item?.price?.amount ?? null;
-  const priceCurrency = item?.price?.currency ?? '€';
-
-  const trainSummaryParts = nodes
-    .map((n) => {
-      const acronym = String(n?.train?.acronym || '').trim();
-      const number = n?.train?.trainIdentifier ? String(n.train.trainIdentifier).trim() : '';
-      if (!acronym && !number) return null;
-      return { acronym, number };
-    })
-    .filter(Boolean);
-
-  return (
-    <TouchableOpacity
-      activeOpacity={0.8}
-      onPress={() => {
-        if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
-          UIManager.setLayoutAnimationEnabledExperimental(true);
-        }
-        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-        setExpanded((v) => !v);
-        hapticSelection();
-      }}
-      style={[styles.solutionRow, { borderBottomColor: theme.colors.border }]}
-    >
-      <View style={styles.solutionTopRow}>
-        <View style={styles.solutionTimes}>
-          <Text style={[styles.solutionTimeText, { color: theme.colors.text }]}>{depText} → {arrText}</Text>
-          <Text style={[styles.solutionRouteText, { color: theme.colors.textSecondary }]} numberOfLines={1}>
-            {originStation} → {destinationStation}
-          </Text>
-        </View>
-        <View style={styles.solutionRight}>
-          {priceAmount !== null && priceAmount !== undefined ? (
-            <Text style={[styles.solutionPrice, { color: theme.colors.text }]} numberOfLines={1}>
-              {formatEuro(priceAmount, priceCurrency)}
-            </Text>
-          ) : (
-            <Text style={[styles.solutionPrice, { color: theme.colors.textSecondary }]} numberOfLines={1}>
-              —
-            </Text>
-          )}
-          <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={theme.colors.textSecondary} />
-        </View>
-      </View>
-
-      <View style={styles.solutionPillsRow}>
-        {changes === 0 ? (
-          <View style={[styles.pill, styles.pillAccent, { backgroundColor: theme.colors.accent }]}>
-            <Ionicons name="flash" size={14} color={theme.colors.onAccent} />
-            <Text style={[styles.pillText, { color: theme.colors.onAccent }]}>Diretto</Text>
-          </View>
-        ) : (
-          <View style={[styles.pill, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}>
-            <Ionicons name="swap-horizontal" size={14} color={theme.colors.textSecondary} />
-            <Text style={[styles.pillText, { color: theme.colors.textSecondary }]}>{changes} cambi</Text>
-          </View>
-        )}
-        {duration ? (
-          <View style={[styles.pill, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}>
-            <Ionicons name="time-outline" size={14} color={theme.colors.textSecondary} />
-            <Text style={[styles.pillText, { color: theme.colors.textSecondary }]}>{duration}</Text>
-          </View>
-        ) : null}
-        {arrivalDayLabel ? (
-          <View style={[styles.pill, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}>
-            <Ionicons name="calendar-outline" size={14} color={theme.colors.textSecondary} />
-            <Text style={[styles.pillText, { color: theme.colors.textSecondary }]}>{arrivalDayLabel}</Text>
-          </View>
-        ) : null}
-      </View>
-
-      {trainSummaryParts.length > 0 ? (
-        <Text style={[styles.solutionTrainSummary, { color: theme.colors.textSecondary }]} numberOfLines={expanded ? 10 : 2}>
-          {trainSummaryParts.map((p, idx) => (
-            <React.Fragment key={`${idx}-${p.acronym}-${p.number}`}>
-              {idx > 0 ? ' · ' : null}
-              {p.acronym ? (
-                <Text style={[styles.inlineTrainType, { color: theme.colors.textSecondary }]}>{p.acronym}</Text>
-              ) : null}
-              {p.acronym && p.number ? ' ' : null}
-              {p.number ? <Text style={[styles.inlineTrainNumber, { color: theme.colors.text }]}>{p.number}</Text> : null}
-            </React.Fragment>
-          ))}
-        </Text>
-      ) : null}
-
-      {expanded && nodes.length > 0 ? (
-        <View style={styles.solutionSegments}>
-          {nodes.map((n, idx) => {
-            const acronym = String(n?.train?.acronym || '').trim();
-            const number = String(n?.train?.trainIdentifier || '').trim();
-            const t = `${acronym} ${number}`.trim();
-            const showType = Boolean(acronym && number);
-            const origin = String(n?.origin || '').trim() || '—';
-            const destination = String(n?.destination || '').trim() || '—';
-            const segDepDate = n?.departureTime ? new Date(n.departureTime) : null;
-            const segArrDate = n?.arrivalTime ? new Date(n.arrivalTime) : null;
-            const dep = formatItTime(segDepDate);
-            const arrBase = formatItTime(segArrDate);
-            const segDayDelta = segDepDate && segArrDate ? getDayDelta(segDepDate, segArrDate) : 0;
-            const arr = segDayDelta > 0 ? `${arrBase} (+${segDayDelta}g)` : arrBase;
-            const changeMinutes =
-              idx < nodes.length - 1 ? minutesBetween(n?.arrivalTime, nodes[idx + 1]?.departureTime) : null;
-            const changeAt = destination !== '—' ? destination : null;
-
-            return (
-              <View key={`${idx}-${t}-${origin}-${destination}`}>
-                <View style={[styles.segmentBlock, { borderColor: theme.colors.border, backgroundColor: theme.colors.background }]}>
-                  <View style={styles.segmentHeaderRow}>
-                    <View style={styles.segmentTrainRow}>
-                      {showType ? (
-                        <Text style={[styles.segmentTrainType, { color: theme.colors.textSecondary }]} numberOfLines={1}>
-                          {acronym}
-                        </Text>
-                      ) : null}
-                      <Text style={[styles.segmentTrainNumber, { color: theme.colors.text }]} numberOfLines={1}>
-                        {number || acronym || t || 'Treno'}
-                      </Text>
-                    </View>
-                    <Text style={[styles.segmentTimes, { color: theme.colors.textSecondary }]} numberOfLines={1}>
-                      {dep} → {arr}
-                    </Text>
-                  </View>
-                  <Text style={[styles.segmentRoute, { color: theme.colors.textSecondary }]} numberOfLines={2}>
-                    {origin} → {destination}
-                  </Text>
-                </View>
-
-                {idx < nodes.length - 1 ? (
-                  <View style={[styles.changePill, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}>
-                    <Ionicons name="time-outline" size={14} color={theme.colors.textSecondary} />
-                    <Text style={[styles.changePillText, { color: theme.colors.textSecondary }]} numberOfLines={1}>
-                      Cambio{changeMinutes !== null ? ` · ${changeMinutes} min` : ''}{changeAt ? ` · ${changeAt}` : ''}
-                    </Text>
-                  </View>
-                ) : null}
-              </View>
-            );
-          })}
-        </View>
-      ) : null}
-    </TouchableOpacity>
-  );
-}
-
-function SolutionsModal({
-  visible,
-  onClose,
-  headerTitle,
-  loading,
-  error,
-  solutions,
-  onRetry,
-  filters,
-  onChangeFilters,
-  queryWhen,
-  canLoadMore,
-  onLoadMore,
-}) {
-  const { theme } = useTheme();
-  const list = Array.isArray(solutions) ? solutions : [];
-  const queryDate = queryWhen instanceof Date ? queryWhen : new Date(queryWhen);
-  const queryKey =
-    queryDate instanceof Date && !Number.isNaN(queryDate.getTime())
-      ? `${queryDate.getFullYear()}-${pad2(queryDate.getMonth() + 1)}-${pad2(queryDate.getDate())}`
-      : null;
-
-  const groups = useMemo(() => {
-    const buckets = new Map();
-    for (const s of list) {
-      const d = parseDateTime(s?.departureTime);
-      const key =
-        d instanceof Date && !Number.isNaN(d.getTime())
-          ? `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
-          : 'unknown';
-      const entry = buckets.get(key) || { key, date: d, items: [] };
-      entry.items.push(s);
-      buckets.set(key, entry);
-    }
-
-    return Array.from(buckets.values()).sort((a, b) => {
-      const at = a.date instanceof Date && !Number.isNaN(a.date.getTime()) ? a.date.getTime() : Number.POSITIVE_INFINITY;
-      const bt = b.date instanceof Date && !Number.isNaN(b.date.getTime()) ? b.date.getTime() : Number.POSITIVE_INFINITY;
-      return at - bt;
-    });
-  }, [list]);
-
-  return (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <SafeAreaView style={[styles.modalContainer, { backgroundColor: theme.colors.background }]}>
-        <View style={styles.modalHeader}>
-          <View style={styles.modalHeaderRow}>
-            <TouchableOpacity
-              style={[
-                styles.closeButton,
-                {
-                  backgroundColor: theme.colors.card,
-                  borderColor: theme.colors.border,
-                  borderWidth: BORDER.card,
-                },
-                iconButtonShadow(theme),
-              ]}
-              onPress={onClose}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="close" size={20} color={theme.colors.text} />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              onPress={onRetry}
-              activeOpacity={0.7}
-              disabled={loading}
-              style={[
-                styles.closeButton,
-                {
-                  backgroundColor: theme.colors.card,
-                  borderColor: theme.colors.border,
-                  borderWidth: BORDER.card,
-                  opacity: loading ? 0.6 : 1,
-                },
-                iconButtonShadow(theme),
-              ]}
-              hitSlop={HIT_SLOP.md}
-            >
-              <Ionicons name="refresh" size={20} color={theme.colors.text} />
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        <View style={styles.modalTopSpacer} />
-
-        <View style={styles.modalScrollArea}>
-          <ScrollView
-            style={styles.modalBody}
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={[styles.modalScrollContent, { paddingBottom: 28 }]}
-          >
-            <Text style={[styles.modalTitle, styles.solutionsModalTitle, { color: theme.colors.text }]}>
-              {headerTitle}
-            </Text>
-
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filtersInlineRow}>
-              {[
-                { id: 'all', label: 'Tutti' },
-                { id: 'frecce', label: 'Frecce' },
-                { id: 'intercity', label: 'Intercity' },
-                { id: 'regional', label: 'Regionali' },
-              ].map((c) => {
-                const selected = (filters?.category || 'all') === c.id;
-                return (
-                  <TouchableOpacity
-                    key={c.id}
-                    activeOpacity={0.8}
-                    onPress={() => onChangeFilters?.({ category: c.id })}
-                    style={[
-                      styles.filterPill,
-                      selected
-                        ? { backgroundColor: theme.colors.card, borderColor: theme.colors.border }
-                        : { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
-                    ]}
-                  >
-                    <Text style={[styles.filterPillText, { color: selected ? theme.colors.text : theme.colors.textSecondary }]}>
-                      {c.label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-
-              <TouchableOpacity
-                activeOpacity={0.8}
-                onPress={() => onChangeFilters?.({ directOnly: !filters?.directOnly })}
-                style={[
-                  styles.filterPill,
-                  filters?.directOnly
-                    ? { backgroundColor: theme.colors.accent, borderColor: theme.colors.accent }
-                    : { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
-                ]}
-              >
-                <Ionicons name="flash" size={14} color={filters?.directOnly ? theme.colors.onAccent : theme.colors.textSecondary} />
-                <Text style={[styles.filterPillText, { color: filters?.directOnly ? theme.colors.onAccent : theme.colors.textSecondary }]}>
-                  Diretti
-                </Text>
-              </TouchableOpacity>
-            </ScrollView>
-
-            {loading || error || list.length === 0 ? (
-              <>
-                <Text style={[styles.modalSectionTitle, styles.solutionsModalSectionTitle, { color: theme.colors.textSecondary }]}>
-                  {`${formatItLongDate(queryWhen)} - ${formatItTime(queryWhen)}`.toUpperCase()}
-                </Text>
-                <View style={[styles.solutionsCard, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }, cardShadow(theme)]}>
-                  {loading ? (
-                    <View style={styles.resultsLoading}>
-                      <ModernSpinner size={22} thickness={3} color={theme.colors.accent} innerStyle={{ backgroundColor: theme.colors.card }} />
-                      <Text style={[styles.resultsLoadingText, { color: theme.colors.textSecondary }]}>Carico soluzioni…</Text>
-                    </View>
-                  ) : error ? (
-                    <View style={styles.resultsEmptyState}>
-                      <Text style={[styles.resultsEmptyTitle, { color: theme.colors.text }]}>Nessuna risposta</Text>
-                      <Text style={[styles.resultsEmptySubtitle, { color: theme.colors.textSecondary }]}>{error}</Text>
-                    </View>
-                  ) : (
-                    <View style={styles.resultsEmptyState}>
-                      <Text style={[styles.resultsEmptyTitle, { color: theme.colors.text }]}>Nessuna soluzione</Text>
-                      <Text style={[styles.resultsEmptySubtitle, { color: theme.colors.textSecondary }]}>
-                        Prova a cambiare orario o stazioni.
-                      </Text>
-                    </View>
-                  )}
-                </View>
-              </>
-            ) : (
-              <>
-                {groups.map((g, idx) => {
-                  const rawTitle =
-                    g.key !== 'unknown'
-                      ? g.key === queryKey
-                        ? `${formatItLongDate(g.date)} - ${formatItTime(queryWhen)}`
-                        : formatItLongDate(g.date)
-                      : '—';
-                  const title = String(rawTitle || '—').toUpperCase();
-
-                  const isLast = idx === groups.length - 1;
-
-                  return (
-                    <View key={g.key}>
-                      <Text style={[styles.modalSectionTitle, styles.solutionsModalSectionTitle, { color: theme.colors.textSecondary }]}>{title}</Text>
-                      <View style={[styles.solutionsCard, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }, cardShadow(theme)]}>
-                        <View>
-                          {g.items.map((s, i) => (
-                            <SolutionRow key={String(s?.id ?? `${g.key}-${i}`)} item={s} theme={theme} />
-                          ))}
-                          {isLast && canLoadMore ? (
-                            <TouchableOpacity
-                              style={[styles.loadMoreRow, { borderTopColor: theme.colors.border }]}
-                              activeOpacity={0.75}
-                              onPress={onLoadMore}
-                              disabled={loading}
-                            >
-                              <Text style={[styles.loadMoreText, { color: theme.colors.accent }]}>Carica più soluzioni</Text>
-                              <Ionicons name="chevron-down" size={18} color={theme.colors.accent} />
-                            </TouchableOpacity>
-                          ) : null}
-                        </View>
-                      </View>
-                    </View>
-                  );
-                })}
-              </>
-            )}
-          </ScrollView>
-
-          <EdgeFade height={SPACE.lg} style={styles.modalTopEdgeFade} />
         </View>
       </SafeAreaView>
     </Modal>
@@ -1008,34 +167,48 @@ function SolutionsModal({
 
 export default function OrariScreen() {
   const { theme } = useTheme();
+  const insets = useSafeAreaInsets();
+  const tabBarHeight = Platform.OS === 'ios' ? 76 : 64;
+  const bottomPadding = SPACE.xxl + tabBarHeight + insets.bottom;
+  const navigation = useNavigation();
+  const route = useRoute();
+  const pendingTrainOpenRef = useRef(null);
+  const solutionsDismissTimerRef = useRef(null);
   const [scrollEnabled, setScrollEnabled] = useState(true);
   const [fromStation, setFromStation] = useState(null);
   const [toStation, setToStation] = useState(null);
-  const [when, setWhen] = useState(() => {
-    const d = new Date();
-    d.setMinutes(Math.ceil(d.getMinutes() / 5) * 5);
-    d.setSeconds(0);
-    d.setMilliseconds(0);
-    return d;
-  });
+  const swapAnim = useRef(new Animated.Value(1)).current;
+  const [when, setWhen] = useState(() => getDefaultWhen());
 
   const [fromModalVisible, setFromModalVisible] = useState(false);
   const [toModalVisible, setToModalVisible] = useState(false);
   const [dateModalVisible, setDateModalVisible] = useState(false);
 
   const [solutionsVisible, setSolutionsVisible] = useState(false);
-  const [solutionsLoading, setSolutionsLoading] = useState(false);
-  const [solutionsError, setSolutionsError] = useState('');
-  const [solutions, setSolutions] = useState([]);
-  const [solutionsOffset, setSolutionsOffset] = useState(0);
-  const [solutionsLimit, setSolutionsLimit] = useState(10);
-  const [solutionsHasNext, setSolutionsHasNext] = useState(false);
+  const {
+    solutions,
+    setSolutions,
+    solutionsLoading,
+    solutionsError,
+    setSolutionsError,
+    solutionsOffset,
+    setSolutionsOffset,
+    solutionsLimit,
+    setSolutionsLimit,
+    solutionsHasNext,
+    solutionsQueryWhen,
+    runSearch: runSolutionsSearch,
+  } = useTravelSolutions({
+    fetchSolutions: getTravelSolutions,
+    onSaveRecent: saveRecentSolution,
+    onLoadRecents: loadRecentSolutions,
+  });
   const [solutionsFilters, setSolutionsFilters] = useState({
     category: 'all',
     directOnly: false,
   });
-  const [solutionsQueryWhen, setSolutionsQueryWhen] = useState(null);
   const [recentSolutions, setRecentSolutions] = useState([]);
+  const [recentSolutionsLoaded, setRecentSolutionsLoaded] = useState(false);
   const [undoPayload, setUndoPayload] = useState(null);
   const [undoMessage, setUndoMessage] = useState('');
   const [undoVisible, setUndoVisible] = useState(false);
@@ -1059,10 +232,11 @@ export default function OrariScreen() {
     };
   }, []);
 
-  const loadRecentSolutions = async () => {
+  async function loadRecentSolutions() {
     const list = await getRecentSolutions(5);
     setRecentSolutions(Array.isArray(list) ? list : []);
-  };
+    setRecentSolutionsLoaded(true);
+  }
 
   const showUndoToast = ({ payload, message }) => {
     if (undoTimeoutRef.current) {
@@ -1131,7 +305,7 @@ export default function OrariScreen() {
   const handleDeleteRecentSolution = async (entry) => {
     const id = entry?.id ? String(entry.id) : null;
     if (!id) return;
-    hapticImpact(Haptics.ImpactFeedbackStyle.Medium);
+    hapticImpact(ImpactFeedbackStyle.Medium);
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     await removeRecentSolution(id);
     await loadRecentSolutions();
@@ -1151,7 +325,7 @@ export default function OrariScreen() {
         text: 'Cancella',
         style: 'destructive',
         onPress: async () => {
-          hapticImpact(Haptics.ImpactFeedbackStyle.Heavy);
+          hapticImpact(ImpactFeedbackStyle.Heavy);
           const previous = await getRecentSolutions(10);
           LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
           await clearRecentSolutions();
@@ -1176,10 +350,91 @@ export default function OrariScreen() {
     const to = toStation?.name ? toStation.name : 'A…';
     return `${from} → ${to}`;
   }, [fromStation?.name, toStation?.name]);
+  const headerRoute = useMemo(() => {
+    const from = fromStation?.name ? fromStation.name : 'Da…';
+    const to = toStation?.name ? toStation.name : 'A…';
+    return { from, to };
+  }, [fromStation?.name, toStation?.name]);
 
-  const headerSubtitle = useMemo(() => whenLabel, [whenLabel]);
+  const openTrainFromSolution = useCallback(
+    ({ trainNumber, originName, departureTime }) => {
+      const num = String(trainNumber || '').trim();
+      if (!num) return;
+      const date = departureTime ? toYmd(parseDateTime(departureTime)) : null;
+      hapticImpact(ImpactFeedbackStyle.Medium);
+      pendingTrainOpenRef.current = {
+        openTrainNumber: num,
+        openTrainOriginName: originName || null,
+        openTrainDate: date || null,
+        openTrainHaptics: false,
+      };
+      setSolutionsVisible(false);
+    },
+    [navigation]
+  );
+  const handleOpenTrainFromSolution = ALLOW_MODAL_TO_MODAL_NAV ? openTrainFromSolution : null;
+  const handleSolutionsDismiss = useCallback(() => {
+    const payload = pendingTrainOpenRef.current;
+    if (!payload) return;
+    pendingTrainOpenRef.current = null;
+    if (solutionsDismissTimerRef.current) {
+      clearTimeout(solutionsDismissTimerRef.current);
+      solutionsDismissTimerRef.current = null;
+    }
+    InteractionManager.runAfterInteractions(() => {
+      const token = Date.now();
+      navigation.navigate('CercaTreno', { openTrainToken: token, ...payload });
+    });
+  }, [navigation]);
+  useEffect(() => {
+    if (Platform.OS === 'ios') return;
+    if (solutionsVisible) return;
+    if (!pendingTrainOpenRef.current) return;
+    solutionsDismissTimerRef.current = setTimeout(() => {
+      handleSolutionsDismiss();
+    }, 180);
+    return () => {
+      if (solutionsDismissTimerRef.current) {
+        clearTimeout(solutionsDismissTimerRef.current);
+        solutionsDismissTimerRef.current = null;
+      }
+    };
+  }, [handleSolutionsDismiss, solutionsVisible]);
+  useEffect(() => {
+    return () => {
+      if (solutionsDismissTimerRef.current) {
+        clearTimeout(solutionsDismissTimerRef.current);
+        solutionsDismissTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const canSearch = Boolean(fromStation?.name && toStation?.name && when instanceof Date);
+  const handleSwapStations = () => {
+    if (!fromStation && !toStation) return;
+    hapticSelection();
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setFromStation(toStation);
+    setToStation(fromStation);
+  };
+
+  const handleSwapPressIn = () => {
+    Animated.spring(swapAnim, {
+      toValue: 0.92,
+      speed: 20,
+      bounciness: 6,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const handleSwapPressOut = () => {
+    Animated.spring(swapAnim, {
+      toValue: 1,
+      speed: 18,
+      bounciness: 6,
+      useNativeDriver: true,
+    }).start();
+  };
 
   const runSearch = async (overrides = null) => {
     const from = overrides?.fromStation ?? fromStation;
@@ -1192,66 +447,55 @@ export default function OrariScreen() {
 
     const canRun = Boolean(from?.name && to?.name && whenValue instanceof Date);
     if (!canRun) {
-      hapticImpact(Haptics.ImpactFeedbackStyle.Light);
+      hapticImpact(ImpactFeedbackStyle.Light);
       setSolutionsError('Seleziona stazione di partenza, arrivo e data/ora.');
       setSolutions([]);
       setSolutionsVisible(true);
       return;
     }
-
-    const date = toYmd(whenValue);
-    const time = toHm(whenValue);
     setSolutionsVisible(true);
-    setSolutionsLoading(true);
-    setSolutionsError('');
-    setSolutionsQueryWhen(whenValue);
-    if (!append) setSolutions([]);
-
-    try {
-      setSolutionsOffset(offset);
-      setSolutionsLimit(limit);
-      const resp = await getTravelSolutions({
-        fromName: from.name,
-        fromId: from.lefrecceId ?? null,
-        toName: to.name,
-        toId: to.lefrecceId ?? null,
-        date,
-        time,
-        offset,
-        limit,
-        frecceOnly: filters?.category === 'frecce',
-        intercityOnly: filters?.category === 'intercity',
-        regionalOnly: filters?.category === 'regional',
-        noChanges: Boolean(filters?.directOnly),
-      });
-
-      if (!resp?.ok) {
-        setSolutionsError(String(resp?.error || 'Errore nel recupero soluzioni'));
-        setSolutions([]);
-        setSolutionsHasNext(false);
-        return;
-      }
-      const list = Array.isArray(resp?.solutions) ? resp.solutions : [];
-      setSolutions((prev) => (append ? [...(Array.isArray(prev) ? prev : []), ...list] : list));
-      setSolutionsHasNext(list.length === limit);
-
-      if (!append && offset === 0) {
-        await saveRecentSolution({
-          fromName: from.name,
-          fromId: from.id ?? null,
-          toName: to.name,
-          toId: to.id ?? null,
-          whenISO: whenValue.toISOString(),
-        });
-        await loadRecentSolutions();
-      }
-    } catch (e) {
-      setSolutionsError(String(e?.message || 'Errore nel recupero soluzioni'));
-      setSolutions([]);
-    } finally {
-      setSolutionsLoading(false);
-    }
+    await runSolutionsSearch({
+      from,
+      to,
+      when: whenValue,
+      filters,
+      offset,
+      limit,
+      append,
+    });
   };
+
+  useEffect(() => {
+    const token = route?.params?.openSolutionToken;
+    if (token === null || token === undefined) return;
+    const fromRaw = route?.params?.openSolutionFrom;
+    const toRaw = route?.params?.openSolutionTo;
+    if (typeof fromRaw !== 'string' || typeof toRaw !== 'string') return;
+    const fromName = fromRaw.trim();
+    const toName = toRaw.trim();
+    if (!fromName || !toName) return;
+
+    const resolveStation = (name, fallbackId) => {
+      const found = getStationByName(name);
+      if (found) return found;
+      return { name, id: fallbackId ?? null, lefrecceId: fallbackId ?? null };
+    };
+
+    const fromId = route?.params?.openSolutionFromId ?? null;
+    const toId = route?.params?.openSolutionToId ?? null;
+    const whenIso = route?.params?.openSolutionWhenISO ?? null;
+    const parsedWhen = whenIso ? parseDateTime(whenIso) : null;
+    const nextWhen =
+      parsedWhen instanceof Date && !Number.isNaN(parsedWhen.getTime()) ? parsedWhen : new Date();
+
+    const nextFrom = resolveStation(fromName, fromId);
+    const nextTo = resolveStation(toName, toId);
+
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setFromStation(nextFrom);
+    setToStation(nextTo);
+    setWhen(nextWhen);
+  }, [route?.params?.openSolutionToken]);
 
   const applySolutionFilters = (patch) => {
     const incoming = patch || {};
@@ -1263,9 +507,6 @@ export default function OrariScreen() {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setSolutionsFilters(next);
     setSolutionsOffset(0);
-    requestAnimationFrame(() => {
-      runSearch({ offset: 0, filters: next });
-    });
   };
 
   const loadMoreSolutions = () => {
@@ -1278,12 +519,12 @@ export default function OrariScreen() {
 
   const openWhenPicker = () => {
     hapticSelection();
+    const base = when instanceof Date && !Number.isNaN(when.getTime()) ? when : getDefaultWhen();
     if (Platform.OS === 'ios') {
       setDateModalVisible(true);
       return;
     }
 
-    const base = when instanceof Date && !Number.isNaN(when.getTime()) ? when : new Date();
     DateTimePickerAndroid.open({
       value: base,
       mode: 'date',
@@ -1313,47 +554,75 @@ export default function OrariScreen() {
         <ScrollView
           style={styles.content}
           showsVerticalScrollIndicator={false}
+          alwaysBounceVertical
+          contentContainerStyle={[styles.contentContainer, { paddingBottom: bottomPadding }]}
           scrollEnabled={scrollEnabled}
-          contentContainerStyle={styles.contentContainer}
         >
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: theme.colors.textSecondary }]}>CERCA ORARI</Text>
             <View style={[styles.formCard, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }, cardShadow(theme)]}>
-              <TouchableOpacity
-                style={styles.formRow}
-                activeOpacity={0.6}
-                onPress={() => {
-                  hapticSelection();
-                  setFromModalVisible(true);
-                }}
-              >
-                <Text style={[styles.formLabel, { color: theme.colors.textSecondary }]}>Da</Text>
-                <View style={styles.formRight}>
-                  <Text style={[styles.formValue, { color: fromStation?.name ? theme.colors.text : theme.colors.textSecondary }]} numberOfLines={1}>
-                    {fromStation?.name || 'Scegli stazione'}
-                  </Text>
-                  <Ionicons name="chevron-forward" size={18} color={theme.colors.textSecondary} />
-                </View>
-              </TouchableOpacity>
+              <View style={styles.swapContainer}>
+                <View style={styles.swapLeft}>
+                  <TouchableOpacity
+                    style={styles.formRow}
+                    activeOpacity={0.6}
+                    onPress={() => {
+                      hapticModalOpen();
+                      setFromModalVisible(true);
+                    }}
+                  >
+                    <Text style={[styles.formLabel, { color: theme.colors.textSecondary }]}>Da</Text>
+                    <View style={styles.formRight}>
+                      <Text style={[styles.formValue, { color: fromStation?.name ? theme.colors.text : theme.colors.textSecondary }]} numberOfLines={1}>
+                        {fromStation?.name || 'Scegli stazione'}
+                      </Text>
+                      <Ionicons name="chevron-forward" size={18} color={theme.colors.textSecondary} />
+                    </View>
+                  </TouchableOpacity>
 
-              <View style={[styles.separator, { backgroundColor: theme.colors.border }]} />
+                  <View style={[styles.separator, { backgroundColor: theme.colors.border }]} />
 
-              <TouchableOpacity
-                style={styles.formRow}
-                activeOpacity={0.6}
-                onPress={() => {
-                  hapticSelection();
-                  setToModalVisible(true);
-                }}
-              >
-                <Text style={[styles.formLabel, { color: theme.colors.textSecondary }]}>A</Text>
-                <View style={styles.formRight}>
-                  <Text style={[styles.formValue, { color: toStation?.name ? theme.colors.text : theme.colors.textSecondary }]} numberOfLines={1}>
-                    {toStation?.name || 'Scegli stazione'}
-                  </Text>
-                  <Ionicons name="chevron-forward" size={18} color={theme.colors.textSecondary} />
+                  <TouchableOpacity
+                    style={styles.formRow}
+                    activeOpacity={0.6}
+                    onPress={() => {
+                      hapticModalOpen();
+                      setToModalVisible(true);
+                    }}
+                  >
+                    <Text style={[styles.formLabel, { color: theme.colors.textSecondary }]}>A</Text>
+                    <View style={styles.formRight}>
+                      <Text style={[styles.formValue, { color: toStation?.name ? theme.colors.text : theme.colors.textSecondary }]} numberOfLines={1}>
+                        {toStation?.name || 'Scegli stazione'}
+                      </Text>
+                      <Ionicons name="chevron-forward" size={18} color={theme.colors.textSecondary} />
+                    </View>
+                  </TouchableOpacity>
                 </View>
-              </TouchableOpacity>
+
+                <View style={[styles.swapRight, { borderLeftColor: theme.colors.border }]}>
+                  <Animated.View style={{ transform: [{ scale: swapAnim }] }}>
+                    <TouchableOpacity
+                      style={[
+                        styles.swapButton,
+                        {
+                          backgroundColor: theme.colors.card,
+                          borderColor: theme.colors.border,
+                        },
+                        iconButtonShadow(theme),
+                      ]}
+                      activeOpacity={0.75}
+                      onPress={handleSwapStations}
+                      onPressIn={handleSwapPressIn}
+                      onPressOut={handleSwapPressOut}
+                      hitSlop={HIT_SLOP.sm}
+                      accessibilityLabel="Scambia stazioni"
+                    >
+                      <Ionicons name="swap-vertical" size={18} color={theme.colors.textSecondary} />
+                    </TouchableOpacity>
+                  </Animated.View>
+                </View>
+              </View>
 
               <View style={[styles.separator, { backgroundColor: theme.colors.border }]} />
 
@@ -1368,15 +637,29 @@ export default function OrariScreen() {
               </TouchableOpacity>
             </View>
 
-            <Text style={[styles.sectionDescription, { color: theme.colors.textSecondary }]}>
-              Seleziona partenza, arrivo e data/ora: le soluzioni si aprono in un modal.
-            </Text>
+            <View style={styles.filtersSection}>
+              <View
+                style={[
+                  styles.directToggleCard,
+                  { backgroundColor: theme.colors.card, borderColor: theme.colors.border },
+                  cardShadow(theme),
+                ]}
+              >
+                <Text style={[styles.directToggleLabel, { color: theme.colors.textSecondary }]}>Diretti</Text>
+                <AccentSwitch
+                  value={Boolean(solutionsFilters?.directOnly)}
+                  onValueChange={(nextValue) => applySolutionFilters({ directOnly: nextValue })}
+                />
+              </View>
+            </View>
 
             <TouchableOpacity
               style={[styles.primaryButton, { backgroundColor: canSearch ? theme.colors.primary : theme.colors.border }]}
               activeOpacity={0.85}
+              disabled={!canSearch}
               onPress={() => {
-                hapticImpact();
+                if (!canSearch) return;
+                hapticModalOpen();
                 runSearch();
               }}
             >
@@ -1402,8 +685,6 @@ export default function OrariScreen() {
                   {recentSolutions.map((r, index) => {
                     const from = String(r?.fromName || '').trim() || '—';
                     const to = String(r?.toName || '').trim() || '—';
-                    const whenIso = r?.whenISO || null;
-                    const label = whenIso ? formatItDateTime(new Date(whenIso)) : '—';
                     return (
                       <View key={String(r?.id ?? index)}>
                         <SwipeableRow
@@ -1420,26 +701,26 @@ export default function OrariScreen() {
                               hapticSelection();
                               const resolvedFrom = enrichStation({ name: from, id: r?.fromId ?? null });
                               const resolvedTo = enrichStation({ name: to, id: r?.toId ?? null });
-                              const nextWhen = whenIso ? new Date(whenIso) : new Date();
                               LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
                               setFromStation(resolvedFrom);
                               setToStation(resolvedTo);
-                              setWhen(nextWhen);
                               requestAnimationFrame(() => {
-                                runSearch({ fromStation: resolvedFrom, toStation: resolvedTo, when: nextWhen });
+                                runSearch({ fromStation: resolvedFrom, toStation: resolvedTo });
                               });
                             }}
                           >
                             <View style={styles.listItemContent}>
-                              <View style={styles.listItemIcon}>
-                                <Ionicons name="time-outline" size={20} color={theme.colors.text} />
+                              <View style={styles.routeIndicator}>
+                                <View style={[styles.routeDot, styles.routeDotHollow, { borderColor: theme.colors.textSecondary }]} />
+                                <View style={[styles.routeLine, { backgroundColor: theme.colors.border }]} />
+                                <View style={[styles.routeDot, { backgroundColor: theme.colors.accent }]} />
                               </View>
-                              <View style={styles.listItemText}>
-                                <Text style={[styles.listItemTitle, { color: theme.colors.text }]} numberOfLines={1}>
-                                  {from} → {to}
+                              <View style={styles.routeText}>
+                                <Text style={[styles.routeFrom, { color: theme.colors.text }]} numberOfLines={1}>
+                                  {from}
                                 </Text>
-                                <Text style={[styles.listItemSubtitle, { color: theme.colors.textSecondary }]} numberOfLines={1}>
-                                  {label}
+                                <Text style={[styles.routeTo, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+                                  {to}
                                 </Text>
                               </View>
                               <Ionicons
@@ -1459,7 +740,15 @@ export default function OrariScreen() {
                   })}
                 </View>
               </View>
-            ) : null}
+            ) : recentSolutionsLoaded ? (
+              <SectionPlaceholderCard
+                title="RICERCHE RECENTI"
+                description="Le tratte che cerchi più spesso appariranno qui, così puoi ripeterle al volo."
+                containerStyle={styles.recentSection}
+              />
+            ) : (
+              <SectionSkeleton title="RICERCHE RECENTI" rows={3} containerStyle={styles.recentSection} />
+            )}
           </View>
         </ScrollView>
 
@@ -1494,13 +783,15 @@ export default function OrariScreen() {
               <Text style={[styles.undoToastText, { color: theme.colors.text }]} numberOfLines={1}>
                 {undoMessage}
               </Text>
-              <TouchableOpacity
-                onPress={handleUndo}
-                activeOpacity={0.75}
-                hitSlop={HIT_SLOP.sm}
-              >
-                <Text style={[styles.undoToastAction, { color: theme.colors.accent }]}>ANNULLA</Text>
-              </TouchableOpacity>
+              {undoPayload ? (
+                <TouchableOpacity
+                  onPress={handleUndo}
+                  activeOpacity={0.75}
+                  hitSlop={HIT_SLOP.sm}
+                >
+                  <Text style={[styles.undoToastAction, { color: theme.colors.accent }]}>ANNULLA</Text>
+                </TouchableOpacity>
+              ) : null}
             </View>
           </Animated.View>
         )}
@@ -1508,38 +799,61 @@ export default function OrariScreen() {
         <StationSearchModal
           visible={fromModalVisible}
           title="Da"
-          onClose={() => setFromModalVisible(false)}
+          onClose={() => {
+            hapticModalClose();
+            setFromModalVisible(false);
+          }}
           onSelect={(s) => setFromStation(s)}
+          styles={styles}
+          modalHeaderTop={MODAL_HEADER_TOP_OFFSET}
+          modalTopSpacerHeight={MODAL_TOP_SPACER_HEIGHT}
         />
 
         <StationSearchModal
           visible={toModalVisible}
           title="A"
-          onClose={() => setToModalVisible(false)}
+          onClose={() => {
+            hapticModalClose();
+            setToModalVisible(false);
+          }}
           onSelect={(s) => setToStation(s)}
+          styles={styles}
+          modalHeaderTop={MODAL_HEADER_TOP_OFFSET}
+          modalTopSpacerHeight={MODAL_TOP_SPACER_HEIGHT}
         />
 
         <DateTimeModal
           visible={dateModalVisible}
           value={when}
-          onClose={() => setDateModalVisible(false)}
+          onClose={() => {
+            hapticModalClose();
+            setDateModalVisible(false);
+          }}
           onConfirm={(d) => setWhen(d)}
+          modalHeaderTop={MODAL_HEADER_TOP_OFFSET}
+          modalTopSpacerHeight={MODAL_TOP_SPACER_HEIGHT}
         />
 
         <SolutionsModal
           visible={solutionsVisible}
-          onClose={() => setSolutionsVisible(false)}
+          onClose={() => {
+            hapticModalClose();
+            setSolutionsVisible(false);
+          }}
+          onDismiss={handleSolutionsDismiss}
           headerTitle={headerTitle}
-          headerSubtitle={formatItTime(solutionsQueryWhen || when)}
+          headerRoute={headerRoute}
+          onOpenTrain={handleOpenTrainFromSolution}
           loading={solutionsLoading}
           error={solutionsError}
           solutions={solutions}
           onRetry={() => runSearch()}
-          filters={solutionsFilters}
-          onChangeFilters={applySolutionFilters}
           queryWhen={solutionsQueryWhen || when}
           canLoadMore={solutionsHasNext}
           onLoadMore={loadMoreSolutions}
+          styles={styles}
+          modalHeaderTop={MODAL_HEADER_TOP_OFFSET}
+          modalTopSpacerHeight={MODAL_TOP_SPACER_HEIGHT}
         />
       </AnimatedScreen>
     </SafeAreaView>
@@ -1557,6 +871,7 @@ const styles = StyleSheet.create({
     paddingTop: SPACING.screenTop,
     paddingHorizontal: SPACING.screenX,
     paddingBottom: SPACE.xxl,
+    flexGrow: 1,
   },
   section: {
     marginBottom: SPACE.md,
@@ -1566,16 +881,30 @@ const styles = StyleSheet.create({
     marginBottom: SPACE.sm,
     marginLeft: SPACING.sectionX,
   },
-  sectionDescription: {
-    ...TYPE.caption,
-    marginTop: SPACE.md,
-    marginBottom: SPACE.xs,
-    marginHorizontal: SPACING.sectionX,
-  },
   formCard: {
     borderRadius: RADIUS.card,
     borderWidth: BORDER.card,
     overflow: 'hidden',
+  },
+  swapContainer: {
+    flexDirection: 'row',
+  },
+  swapLeft: {
+    flex: 1,
+  },
+  swapRight: {
+    width: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderLeftWidth: BORDER.hairline,
+  },
+  swapButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: BORDER.card,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   formRow: {
     paddingVertical: SPACE.md,
@@ -1616,6 +945,23 @@ const styles = StyleSheet.create({
   primaryButtonText: {
     ...TYPE.button,
   },
+  filtersSection: {
+    marginTop: SPACE.lg,
+  },
+  directToggleCard: {
+    borderRadius: RADIUS.card,
+    borderWidth: BORDER.card,
+    paddingVertical: SPACE.sm,
+    paddingHorizontal: SPACE.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: SPACE.sm,
+  },
+  directToggleLabel: {
+    ...TYPE.sectionLabel,
+    letterSpacing: 0.4,
+  },
   recentSection: {
     marginTop: SPACE.xl,
   },
@@ -1638,11 +984,43 @@ const styles = StyleSheet.create({
   listItem: {
     paddingVertical: SPACE.md,
     paddingHorizontal: SPACE.lg,
+    position: 'relative',
   },
   listItemContent: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: SPACE.md,
+  },
+  routeIndicator: {
+    width: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  routeDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  routeDotHollow: {
+    borderWidth: 2,
+    backgroundColor: 'transparent',
+  },
+  routeLine: {
+    width: 2,
+    height: 16,
+    borderRadius: 1,
+    marginVertical: 4,
+  },
+  routeText: {
+    flex: 1,
+    justifyContent: 'center',
+    gap: 4,
+  },
+  routeFrom: {
+    ...TYPE.bodyMedium,
+  },
+  routeTo: {
+    ...TYPE.body,
   },
   listItemIcon: {
     width: 28,
@@ -1663,7 +1041,7 @@ const styles = StyleSheet.create({
     marginLeft: INSETS.listDividerLeft,
   },
   filtersInlineRow: {
-    marginTop: SPACE.lg,
+    marginTop: 0,
     paddingHorizontal: 0,
     paddingBottom: SPACE.xxs,
     gap: SPACE.sm,
@@ -1713,21 +1091,19 @@ const styles = StyleSheet.create({
   },
   modalHeader: {
     position: 'absolute',
-    top: SPACE.md,
+    top: MODAL_HEADER_TOP_OFFSET,
     left: SPACING.screenX,
     right: SPACING.screenX,
     zIndex: 10,
-  },
-  modalBody: {
-    flex: 1,
-  },
-  modalScrollContent: {
-    paddingHorizontal: SPACING.screenX,
   },
   modalHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: SPACE.sm,
+  },
+  modalBody: {
+    flex: 1,
   },
   closeButton: {
     width: 36,
@@ -1750,12 +1126,15 @@ const styles = StyleSheet.create({
     ...TYPE.calloutSemibold,
   },
   modalTopSpacer: {
-    height: 64,
+    height: MODAL_TOP_SPACER_HEIGHT,
   },
   modalContentWrap: {
     paddingHorizontal: SPACING.screenX,
     paddingBottom: SPACE.xl,
     flex: 1,
+  },
+  solutionsModalContent: {
+    paddingHorizontal: SPACING.screenX,
   },
   stationModalContentWrap: {
     paddingHorizontal: SPACING.screenX,
@@ -1764,13 +1143,6 @@ const styles = StyleSheet.create({
   modalScrollArea: {
     flex: 1,
     position: 'relative',
-  },
-  modalTopEdgeFade: {
-    position: 'absolute',
-    top: -SPACE.sm,
-    left: 0,
-    right: 0,
-    zIndex: 10,
   },
   modalTitle: {
     ...TYPE.screenTitle,
@@ -1781,23 +1153,48 @@ const styles = StyleSheet.create({
     marginBottom: 6,
     marginLeft: 0,
   },
+  solutionsTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACE.sm,
+    marginBottom: SPACE.md,
+  },
+  solutionsTitleIndicator: {
+    width: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  solutionsTitleDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+  },
+  solutionsTitleDotHollow: {
+    borderWidth: 2,
+    backgroundColor: 'transparent',
+  },
+  solutionsTitleLine: {
+    width: 2,
+    height: 18,
+    borderRadius: 1,
+    marginVertical: 4,
+  },
+  solutionsTitleText: {
+    flex: 1,
+    justifyContent: 'center',
+    gap: 2,
+  },
+  solutionsTitleFrom: {
+    ...TYPE.screenTitle,
+  },
+  solutionsTitleTo: {
+    ...TYPE.screenTitle,
+  },
   modalSectionTitle: {
     ...TYPE.sectionLabel,
     marginTop: SPACE.sm,
     marginBottom: SPACE.sm,
     marginLeft: SPACING.sectionX,
-  },
-  solutionsModalSectionTitle: {
-    marginTop: 18,
-    marginBottom: 10,
-    marginLeft: 0,
-  },
-  inlineTrainType: {
-    ...TYPE.caption,
-  },
-  inlineTrainNumber: {
-    ...TYPE.caption,
-    fontFamily: TYPE.titleBold.fontFamily,
   },
   modalSubtitle: {
     ...TYPE.caption,
@@ -1849,7 +1246,7 @@ const styles = StyleSheet.create({
     gap: SPACE.md,
   },
   stationTileIcon: {
-    width: 28,
+    width: 20,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1865,7 +1262,7 @@ const styles = StyleSheet.create({
   },
   stationTileDivider: {
     height: BORDER.hairline,
-    marginLeft: SPACE.lg,
+    marginLeft: 0,
   },
   tileEmpty: {
     paddingVertical: SPACE.md,
@@ -1880,16 +1277,6 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     minHeight: 260,
     flex: 1,
-  },
-  resultsLoading: {
-    paddingVertical: SPACE.lg,
-    paddingHorizontal: SPACE.lg,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: SPACE.md,
-  },
-  resultsLoadingText: {
-    ...TYPE.callout,
   },
   resultsEmptyState: {
     paddingVertical: SPACE.lg,
@@ -1932,82 +1319,104 @@ const styles = StyleSheet.create({
     borderWidth: BORDER.card,
     overflow: 'hidden',
   },
-  solutionsSectionTitle: {
-    marginTop: SPACE.md,
-    ...TYPE.bodySemibold,
-    marginLeft: SPACING.sectionX,
+  solutionGroup: {
+    marginBottom: SPACE.lg,
   },
   solutionRow: {
     paddingVertical: SPACE.md,
-    paddingHorizontal: SPACE.lg,
+    paddingHorizontal: SPACE.md,
     borderBottomWidth: BORDER.hairline,
   },
-  solutionTopRow: {
+  solutionRowLast: {
+    borderBottomWidth: 0,
+  },
+  solutionMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: SPACE.md,
-  },
-  solutionTimes: {
-    flex: 1,
-  },
-  solutionTimeText: {
-    ...TYPE.bodySemibold,
-    letterSpacing: 0.2,
-  },
-  solutionRouteText: {
-    ...TYPE.caption,
-    marginTop: SPACE.xs,
-  },
-  solutionRight: {
-    alignItems: 'flex-end',
+    flexWrap: 'wrap',
     gap: SPACE.sm,
+    rowGap: SPACE.sm,
+    marginTop: SPACE.sm,
   },
-  solutionPrice: {
-    ...TYPE.subheadline,
-    fontFamily: TYPE.bodySemibold.fontFamily,
-  },
-  solutionPillsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: SPACE.sm,
-    marginTop: SPACE.md,
-  },
-  pill: {
+  solutionMetaPill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: SPACE.xs,
-    paddingHorizontal: SPACE.md,
-    paddingVertical: SPACE.sm,
+    paddingHorizontal: SPACE.sm,
+    paddingVertical: SPACE.xs,
     borderRadius: 999,
     borderWidth: BORDER.card,
   },
-  pillAccent: {
+  solutionMetaPillAccent: {
     borderWidth: 0,
   },
-  pillText: {
+  solutionMetaText: {
+    ...TYPE.captionSemibold,
+  },
+  solutionBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACE.sm,
+    marginBottom: SPACE.xs,
+  },
+  solutionBadgeInline: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACE.xxs,
+  },
+  solutionBadgeInlineText: {
+    ...TYPE.pill,
+    letterSpacing: 0.2,
+  },
+  solutionSortRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACE.sm,
+    flexWrap: 'wrap',
+    alignSelf: 'flex-start',
+    marginLeft: 8,
+    marginBottom: SPACE.sm,
+  },
+  solutionSortPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACE.xs,
+    paddingHorizontal: SPACE.sm,
+    paddingVertical: SPACE.xxs,
+    borderRadius: 999,
+    borderWidth: BORDER.card,
+  },
+  solutionSortText: {
     ...TYPE.captionSemibold,
     letterSpacing: 0.2,
   },
-  solutionTrainSummary: {
-    marginTop: SPACE.md,
-    ...TYPE.caption,
+  solutionBadge: {
+    paddingHorizontal: SPACE.sm,
+    paddingVertical: SPACE.xxs,
+    borderRadius: 999,
+    borderWidth: BORDER.card,
+  },
+  solutionBadgeText: {
+    ...TYPE.pill,
+    letterSpacing: 0.2,
   },
   solutionSegments: {
-    marginTop: SPACE.md,
     gap: SPACE.md,
   },
   segmentBlock: {
-    paddingVertical: SPACE.md,
-    paddingHorizontal: SPACE.md,
-    borderRadius: RADIUS.button,
-    borderWidth: BORDER.card,
+    paddingVertical: SPACE.xxs,
+  },
+  segmentBlockFirst: {
+    paddingTop: SPACE.xxs,
+  },
+  segmentBlockLast: {
+    borderBottomWidth: 0,
   },
   segmentHeaderRow: {
     flexDirection: 'row',
-    alignItems: 'baseline',
-    justifyContent: 'space-between',
-    gap: SPACE.md,
+    alignItems: 'center',
+    gap: SPACE.xs,
+    marginBottom: SPACE.xs,
   },
   segmentTrainRow: {
     flex: 1,
@@ -2017,38 +1426,124 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   segmentTrainType: {
-    ...TYPE.caption,
+    ...TYPE.title,
+    lineHeight: 22,
     flexShrink: 0,
   },
   segmentTrainNumber: {
-    ...TYPE.callout,
-    fontFamily: TYPE.titleBold.fontFamily,
+    ...TYPE.titleSemibold,
+    lineHeight: 22,
     flexShrink: 1,
   },
-  segmentTimes: {
-    ...TYPE.caption,
+  segmentStops: {
+    marginTop: 0,
+    gap: 0,
+    position: 'relative',
+    height: SOLUTION_STOP.rowHeight * 2,
   },
-  segmentRoute: {
-    marginTop: SPACE.sm,
-    ...TYPE.caption,
-  },
-  changePill: {
+  segmentStopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: SPACE.sm,
-    marginTop: SPACE.md,
-    alignSelf: 'flex-start',
-    paddingHorizontal: SPACE.md,
-    paddingVertical: SPACE.sm,
-    borderRadius: 999,
-    borderWidth: BORDER.card,
+    gap: 0,
+    height: SOLUTION_STOP.rowHeight,
   },
-  changePillText: {
+  segmentStopTime: {
+    ...TYPE.titleSemibold,
+    lineHeight: 20,
+    includeFontPadding: false,
+    textAlign: 'right',
+  },
+  segmentStopTimeWrap: {
+    width: SOLUTION_STOP.timeWidth,
+    height: SOLUTION_STOP.rowHeight,
+    justifyContent: 'center',
+    alignItems: 'flex-end',
+    marginLeft: SPACE.xxs,
+    marginRight: SPACE.sm,
+  },
+  segmentStopIndicator: {
+    width: SOLUTION_STOP.indicatorWidth,
+    height: SOLUTION_STOP.rowHeight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  segmentStopDot: {
+    width: SOLUTION_STOP.dotSize,
+    height: SOLUTION_STOP.dotSize,
+    borderRadius: SOLUTION_STOP.dotSize / 2,
+    transform: [{ translateY: SOLUTION_STOP.dotOffsetY }],
+  },
+  segmentStopDotHollow: {
+    borderWidth: 2,
+    backgroundColor: 'transparent',
+  },
+  segmentStopLine: {
+    position: 'absolute',
+    left: (SOLUTION_STOP.indicatorWidth - SOLUTION_STOP.lineWidth) / 2,
+    top: SOLUTION_STOP.rowHeight / 2 + SOLUTION_STOP.dotSize / 2 + SOLUTION_STOP.lineGap + SOLUTION_STOP.dotOffsetY,
+    bottom: SOLUTION_STOP.rowHeight / 2 + SOLUTION_STOP.dotSize / 2 + SOLUTION_STOP.lineGap - SOLUTION_STOP.dotOffsetY,
+    width: SOLUTION_STOP.lineWidth,
+    borderRadius: SOLUTION_STOP.lineWidth / 2,
+  },
+  segmentStopStation: {
+    ...TYPE.title,
+    lineHeight: 20,
+    includeFontPadding: false,
+  },
+  segmentStopStationWrap: {
     flex: 1,
+    height: SOLUTION_STOP.rowHeight,
+    justifyContent: 'center',
+  },
+  changeRow: {
+    marginTop: SPACE.xs,
+  },
+  changeDivider: {
+    height: BORDER.hairline,
+    marginBottom: SPACE.xs,
+  },
+  changeContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  changeIndicator: {
+    width: SOLUTION_STOP.indicatorWidth,
+    marginRight: SPACE.xs,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  changeTimeCol: {
+    width: SOLUTION_STOP.timeWidth,
+    marginLeft: 2,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    minHeight: SOLUTION_STOP.rowHeight,
+  },
+  changeTimeWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACE.xs,
+  },
+  changeTextCol: {
+    flexGrow: 1,
+    flexShrink: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACE.xs,
+  },
+  changeText: {
     ...TYPE.caption,
+    flexShrink: 1,
+  },
+  changeStation: {
+    ...TYPE.captionSemibold,
+  },
+  changeTime: {
+    ...TYPE.captionSemibold,
   },
   loadMoreRow: {
-    paddingVertical: SPACE.md,
+    paddingVertical: SPACE.sm,
     paddingHorizontal: SPACE.lg,
     borderTopWidth: BORDER.hairline,
     flexDirection: 'row',

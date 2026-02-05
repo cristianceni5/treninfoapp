@@ -5,6 +5,7 @@
  */
 
 import { decode as heDecode } from 'he';
+import { withRetry } from '../utils/network';
 
 export const API_BASE = process.env.EXPO_PUBLIC_API_BASE || 'https://treninfo.netlify.app';
 const FETCH_TIMEOUT_MS = 12000; // 12 secondi come da documentazione
@@ -74,6 +75,16 @@ async function fetchWithTimeout(url, options = {}) {
   }
 }
 
+const DEFAULT_RETRY_OPTIONS = {
+  retries: 1,
+  minTimeout: 300,
+  maxTimeout: 1500,
+};
+
+async function fetchWithRetry(url, options = {}) {
+  return withRetry(() => fetchWithTimeout(url, options), DEFAULT_RETRY_OPTIONS);
+}
+
 /**
  * 1. Cerca stazioni (autocomplete)
  * @param {string} query - Testo da cercare (min 2 caratteri)
@@ -88,12 +99,12 @@ export async function searchStationsAPI(query) {
   // Proviamo in ordine: LeFrecce (migliore per soluzioni), poi stations, poi ViaggiaTreno
   const q = encodeURIComponent(query);
   try {
-    return await fetchWithTimeout(`${API_BASE}/api/lefrecce/autocomplete?query=${q}`);
+    return await fetchWithRetry(`${API_BASE}/api/lefrecce/autocomplete?query=${q}`);
   } catch (err1) {
     try {
-      return await fetchWithTimeout(`${API_BASE}/api/stations/autocomplete?query=${q}`);
+      return await fetchWithRetry(`${API_BASE}/api/stations/autocomplete?query=${q}`);
     } catch (err2) {
-      return fetchWithTimeout(`${API_BASE}/api/viaggiatreno/autocomplete?query=${q}`);
+      return fetchWithRetry(`${API_BASE}/api/viaggiatreno/autocomplete?query=${q}`);
     }
   }
 }
@@ -108,7 +119,7 @@ export async function getStationInfo(station) {
   const isCode = /^S\d{5}$/.test(value);
   const qs = isCode ? `stationCode=${encodeURIComponent(value)}` : `stationName=${encodeURIComponent(value)}`;
   const url = `${API_BASE}/api/stations/info?${qs}`;
-  return fetchWithTimeout(url);
+  return fetchWithRetry(url);
 }
 
 /**
@@ -122,7 +133,7 @@ export async function getStationDepartures(station, when = 'now') {
   const isCode = /^S\d{5}$/.test(value);
   const qsStation = isCode ? `stationCode=${encodeURIComponent(value)}` : `stationName=${encodeURIComponent(value)}`;
   const url = `${API_BASE}/api/stations/departures?${qsStation}&when=${encodeURIComponent(when)}`;
-  return fetchWithTimeout(url);
+  return fetchWithRetry(url);
 }
 
 /**
@@ -136,7 +147,15 @@ export async function getStationArrivals(station, when = 'now') {
   const isCode = /^S\d{5}$/.test(value);
   const qsStation = isCode ? `stationCode=${encodeURIComponent(value)}` : `stationName=${encodeURIComponent(value)}`;
   const url = `${API_BASE}/api/stations/arrivals?${qsStation}&when=${encodeURIComponent(when)}`;
-  return fetchWithTimeout(url);
+  return fetchWithRetry(url);
+}
+
+/**
+ * 5. News e infomobilità
+ * @returns {Promise<Object>} { ok: boolean, works: boolean, data: Array }
+ */
+export async function getNews() {
+  return fetchWithRetry(`${API_BASE}/api/news`);
 }
 
 /**
@@ -174,14 +193,14 @@ export async function getTrainStatus(trainNumber, options = {}) {
     url += `&referenceTimestamp=${encodeURIComponent(ts)}`;
   }
   
-  return fetchWithTimeout(url);
+  return fetchWithRetry(url);
 }
 
 /**
  * 6. Soluzioni di viaggio
  * @param {Object} params - Parametri ricerca
- * @param {string} params.fromName - Nome stazione partenza
- * @param {string} params.toName - Nome stazione arrivo
+ * @param {string} params.fromName - Identificativo stazione (ora usa LeFrecce ID quando disponibile)
+ * @param {string} params.toName - Identificativo stazione (ora usa LeFrecce ID quando disponibile)
  * @param {string} params.date - Data viaggio (YYYY-MM-DD)
  * @param {string} params.time - Ora viaggio (HH:mm) [opzionale]
  * @param {number} params.adults - Numero adulti (default: 1)
@@ -219,20 +238,33 @@ export async function getTravelSolutions(params) {
   } = params;
 
   let url = `${API_BASE}/api/solutions?date=${encodeURIComponent(date)}`;
-  if (fromId !== undefined && fromId !== null && String(fromId).trim() !== '') {
-    url += `&fromId=${encodeURIComponent(String(fromId))}`;
-  } else if (fromStationCode !== undefined && fromStationCode !== null && String(fromStationCode).trim() !== '') {
-    url += `&fromStationCode=${encodeURIComponent(String(fromStationCode))}`;
+
+  const fromIdValue = fromId !== undefined && fromId !== null && String(fromId).trim() !== '' ? String(fromId) : null;
+  const fromStationCodeValue =
+    fromStationCode !== undefined && fromStationCode !== null && String(fromStationCode).trim() !== ''
+      ? String(fromStationCode)
+      : null;
+  const fromNameValue = typeof fromName === 'string' && fromName.trim() ? fromName.trim() : null;
+
+  if (fromIdValue) {
+    url += `&fromLefrecceId=${encodeURIComponent(fromIdValue)}`;
   } else {
-    url += `&fromName=${encodeURIComponent(fromName)}`;
+    if (fromStationCodeValue) url += `&fromStationCode=${encodeURIComponent(fromStationCodeValue)}`;
+    if (fromNameValue) url += `&fromName=${encodeURIComponent(fromNameValue)}`;
   }
 
-  if (toId !== undefined && toId !== null && String(toId).trim() !== '') {
-    url += `&toId=${encodeURIComponent(String(toId))}`;
-  } else if (toStationCode !== undefined && toStationCode !== null && String(toStationCode).trim() !== '') {
-    url += `&toStationCode=${encodeURIComponent(String(toStationCode))}`;
+  const toIdValue = toId !== undefined && toId !== null && String(toId).trim() !== '' ? String(toId) : null;
+  const toStationCodeValue =
+    toStationCode !== undefined && toStationCode !== null && String(toStationCode).trim() !== ''
+      ? String(toStationCode)
+      : null;
+  const toNameValue = typeof toName === 'string' && toName.trim() ? toName.trim() : null;
+
+  if (toIdValue) {
+    url += `&toLefrecceId=${encodeURIComponent(toIdValue)}`;
   } else {
-    url += `&toName=${encodeURIComponent(toName)}`;
+    if (toStationCodeValue) url += `&toStationCode=${encodeURIComponent(toStationCodeValue)}`;
+    if (toNameValue) url += `&toName=${encodeURIComponent(toNameValue)}`;
   }
   if (time) url += `&time=${encodeURIComponent(time)}`;
   if (frecceOnly) url += `&frecceOnly=true`;
@@ -247,7 +279,7 @@ export async function getTravelSolutions(params) {
 
   let resp;
   try {
-    resp = await fetchWithTimeout(url);
+    resp = await fetchWithRetry(url);
   } catch (error) {
     return {
       ok: false,
@@ -286,6 +318,11 @@ export async function getTravelSolutions(params) {
       return { hh: Math.max(0, Math.min(23, hh)), mm: Math.max(0, Math.min(59, mm)) };
     };
 
+    const normalizeYmd = (value) => {
+      const raw = String(value || '').trim();
+      return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null;
+    };
+
     const toLocalIso = (dt) => {
       if (!(dt instanceof Date) || Number.isNaN(dt.getTime())) return null;
       const y = dt.getFullYear();
@@ -294,6 +331,14 @@ export async function getTravelSolutions(params) {
       const hh = String(dt.getHours()).padStart(2, '0');
       const mm = String(dt.getMinutes()).padStart(2, '0');
       return `${y}-${m}-${d}T${hh}:${mm}:00.000`;
+    };
+
+    const toYmd = (dt) => {
+      if (!(dt instanceof Date) || Number.isNaN(dt.getTime())) return null;
+      const y = dt.getFullYear();
+      const m = String(dt.getMonth() + 1).padStart(2, '0');
+      const d = String(dt.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
     };
 
     const makeLocalDate = (ymd, hm, dayOffset = 0) => {
@@ -305,11 +350,13 @@ export async function getTravelSolutions(params) {
       return base;
     };
 
-    const dep = s.departureTime || s.partenza || s.partenzaTime || s.partenza || s.orarioPartenza || s.orarioPartenza2;
+    const dep = s.departureTime || s.partenza || s.partenzaTime || s.orarioPartenza || s.orarioPartenza2;
     const arr = s.arrivalTime || s.arrivo || s.orarioArrivo || s.arrival || s.orarioArrivo2;
 
     const depIsoRaw = String(dep || '').trim();
     const arrIsoRaw = String(arr || '').trim();
+    const depDateStr = normalizeYmd(s.dataPartenza || s.departureDate);
+    const arrDateStr = normalizeYmd(s.dataArrivo || s.arrivalDate);
 
     const durationMinutes =
       typeof s.durata === 'number'
@@ -321,38 +368,54 @@ export async function getTravelSolutions(params) {
     const depHm = parseHm(depIsoRaw);
     const arrHm = parseHm(arrIsoRaw);
 
-    let depDateObj = /^\d{4}-\d{2}-\d{2}T/.test(depIsoRaw) ? new Date(depIsoRaw) : makeLocalDate(date, depHm);
+    const depIsIso = /^\d{4}-\d{2}-\d{2}T/.test(depIsoRaw);
+    const arrIsIso = /^\d{4}-\d{2}-\d{2}T/.test(arrIsoRaw);
+
+    let depDateObj = null;
+    if (depIsIso) {
+      const d = new Date(depIsoRaw);
+      depDateObj = Number.isNaN(d.getTime()) ? null : d;
+    } else if (depDateStr && depHm) {
+      depDateObj = makeLocalDate(depDateStr, depHm);
+    } else if (date && depHm) {
+      depDateObj = makeLocalDate(date, depHm);
+    }
     if (depDateObj && Number.isNaN(depDateObj.getTime())) depDateObj = null;
 
     let arrivalDateObj = null;
-    if (/^\d{4}-\d{2}-\d{2}T/.test(arrIsoRaw)) {
+    if (arrIsIso) {
       const d = new Date(arrIsoRaw);
       arrivalDateObj = Number.isNaN(d.getTime()) ? null : d;
+    } else if (arrDateStr && arrHm) {
+      arrivalDateObj = makeLocalDate(arrDateStr, arrHm);
     } else if (depDateObj && Number.isFinite(Number(durationMinutes)) && Number(durationMinutes) > 0) {
       arrivalDateObj = new Date(depDateObj.getTime() + Number(durationMinutes) * 60000);
-    } else if (date && arrHm) {
-      arrivalDateObj = makeLocalDate(date, arrHm);
-      if (arrivalDateObj && depDateObj && arrivalDateObj.getTime() < depDateObj.getTime()) {
-        arrivalDateObj.setDate(arrivalDateObj.getDate() + 1);
-      }
+    } else if ((depDateObj || date) && arrHm) {
+      const baseYmd = toYmd(depDateObj) || date;
+      arrivalDateObj = makeLocalDate(baseYmd, arrHm);
     }
 
-    const departureTime = /^\d{4}-\d{2}-\d{2}T/.test(depIsoRaw) ? depIsoRaw : toLocalIso(depDateObj);
-    const arrivalTime = /^\d{4}-\d{2}-\d{2}T/.test(arrIsoRaw) ? arrIsoRaw : toLocalIso(arrivalDateObj);
+    if (arrivalDateObj && depDateObj && arrivalDateObj.getTime() < depDateObj.getTime()) {
+      arrivalDateObj.setDate(arrivalDateObj.getDate() + 1);
+    }
+
+    const departureTime = depIsIso ? depIsoRaw : toLocalIso(depDateObj);
+    const arrivalTime = arrIsIso ? arrIsoRaw : toLocalIso(arrivalDateObj);
 
     const legacyTrains = s.treni || s.trains || s.vehicles || s.nodes || s.segments || s.solutionSegments || s.segmentsList || [];
     const nodes = (() => {
       if (!Array.isArray(legacyTrains)) return [];
 
-      let cursor = depDateObj || (date && depHm ? makeLocalDate(date, depHm) : null);
+      const solutionDateStr = depDateStr || toYmd(depDateObj) || date;
+      let cursor = depDateObj || (solutionDateStr && depHm ? makeLocalDate(solutionDateStr, depHm) : null);
       if (cursor && Number.isNaN(cursor.getTime())) cursor = null;
-      if (!cursor && date) cursor = makeLocalDate(date, parseHm('00:00'));
+      if (!cursor && solutionDateStr) cursor = makeLocalDate(solutionDateStr, parseHm('00:00'));
 
       const out = [];
       for (const t of legacyTrains) {
         if (!t || typeof t !== 'object') continue;
-        const tDep = t.departureTime || t.orarioPartenza || t.orarioPartenza || t.orarioPartenza;
-        const tArr = t.arrivalTime || t.orarioArrivo || t.orarioArrivo || t.orarioArrivo;
+        const tDep = t.departureTime || t.partenza || t.orarioPartenza;
+        const tArr = t.arrivalTime || t.arrivo || t.orarioArrivo;
         const number = t.numeroTreno || t.numero || t.number || t.trainNumber || t.num || null;
         const tipo = t.tipoTreno || t.tipo || t.tipoTreno || t.tipo_treno || null;
         const acronym = (typeof tipo === 'object' ? tipo.sigla || tipo.acronym || tipo.code : tipo) || '';
@@ -360,20 +423,25 @@ export async function getTravelSolutions(params) {
 
         const tDepRaw = String(tDep || '').trim();
         const tArrRaw = String(tArr || '').trim();
+        const tDepDateStr = normalizeYmd(t.dataPartenza || t.departureDate);
+        const tArrDateStr = normalizeYmd(t.dataArrivo || t.arrivalDate);
+        const tDepHm = parseHm(tDepRaw);
+        const tArrHm = parseHm(tArrRaw);
+        const tDepIsIso = /^\d{4}-\d{2}-\d{2}T/.test(tDepRaw);
+        const tArrIsIso = /^\d{4}-\d{2}-\d{2}T/.test(tArrRaw);
 
         let depSeg = null;
-        if (/^\d{4}-\d{2}-\d{2}T/.test(tDepRaw)) {
+        if (tDepIsIso) {
           const d = new Date(tDepRaw);
           depSeg = Number.isNaN(d.getTime()) ? null : d;
-        } else if (cursor && date) {
-          const hm = parseHm(tDepRaw);
-          if (hm) {
-            depSeg = new Date(cursor.getTime());
-            depSeg.setHours(hm.hh, hm.mm, 0, 0);
-            if (depSeg.getTime() < cursor.getTime()) depSeg.setDate(depSeg.getDate() + 1);
-          }
-        } else if (date) {
-          depSeg = makeLocalDate(date, parseHm(tDepRaw), 0);
+        } else if (tDepDateStr && tDepHm) {
+          depSeg = makeLocalDate(tDepDateStr, tDepHm, 0);
+        } else if (cursor && tDepHm) {
+          depSeg = new Date(cursor.getTime());
+          depSeg.setHours(tDepHm.hh, tDepHm.mm, 0, 0);
+          if (depSeg.getTime() < cursor.getTime()) depSeg.setDate(depSeg.getDate() + 1);
+        } else if (solutionDateStr && tDepHm) {
+          depSeg = makeLocalDate(solutionDateStr, tDepHm, 0);
         }
 
         if (depSeg && cursor && depSeg.getTime() < cursor.getTime()) {
@@ -383,18 +451,17 @@ export async function getTravelSolutions(params) {
         if (depSeg) cursor = depSeg;
 
         let arrSeg = null;
-        if (/^\d{4}-\d{2}-\d{2}T/.test(tArrRaw)) {
+        if (tArrIsIso) {
           const d = new Date(tArrRaw);
           arrSeg = Number.isNaN(d.getTime()) ? null : d;
-        } else if (depSeg && date) {
-          const hm = parseHm(tArrRaw);
-          if (hm) {
-            arrSeg = new Date(depSeg.getTime());
-            arrSeg.setHours(hm.hh, hm.mm, 0, 0);
-            if (arrSeg.getTime() < depSeg.getTime()) arrSeg.setDate(arrSeg.getDate() + 1);
-          }
-        } else if (date) {
-          arrSeg = makeLocalDate(date, parseHm(tArrRaw), 0);
+        } else if (tArrDateStr && tArrHm) {
+          arrSeg = makeLocalDate(tArrDateStr, tArrHm, 0);
+        } else if (depSeg && tArrHm) {
+          arrSeg = new Date(depSeg.getTime());
+          arrSeg.setHours(tArrHm.hh, tArrHm.mm, 0, 0);
+          if (arrSeg.getTime() < depSeg.getTime()) arrSeg.setDate(arrSeg.getDate() + 1);
+        } else if (solutionDateStr && tArrHm) {
+          arrSeg = makeLocalDate(solutionDateStr, tArrHm, 0);
         }
 
         if (arrSeg && depSeg && arrSeg.getTime() < depSeg.getTime()) {
@@ -403,8 +470,8 @@ export async function getTravelSolutions(params) {
         if (arrSeg) cursor = arrSeg;
 
         out.push({
-          departureTime: /^\d{4}-\d{2}-\d{2}T/.test(tDepRaw) ? tDepRaw : toLocalIso(depSeg),
-          arrivalTime: /^\d{4}-\d{2}-\d{2}T/.test(tArrRaw) ? tArrRaw : toLocalIso(arrSeg),
+          departureTime: tDepIsIso ? tDepRaw : toLocalIso(depSeg),
+          arrivalTime: tArrIsIso ? tArrRaw : toLocalIso(arrSeg),
           origin: t.da || t.origin || t.startLocation || t.from || '',
           destination: t.a || t.destinazione || t.destination || t.to || t.endLocation || '',
           train: {

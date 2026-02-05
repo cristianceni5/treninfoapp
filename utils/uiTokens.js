@@ -25,11 +25,11 @@ export const RADIUS = {
 };
 
 export const FONTS = {
-  light: 'TikTokSans-Light',
-  regular: 'TikTokSans-Regular',
-  medium: 'TikTokSans-Medium',
-  semibold: 'TikTokSans-SemiBold',
-  bold: 'TikTokSans-Bold',
+  light: 'Manrope_400Regular',
+  regular: 'Manrope_500Medium',
+  medium: 'Manrope_600SemiBold',
+  semibold: 'Manrope_700Bold',
+  bold: 'Manrope_800ExtraBold',
 };
 
 export const TYPE = {
@@ -42,12 +42,12 @@ export const TYPE = {
   screenTitle: {
     fontSize: 24,
     fontFamily: FONTS.semibold,
-    letterSpacing: -0.2,
+    letterSpacing: -0.1,
   },
   headline: {
     fontSize: 20,
     fontFamily: FONTS.semibold,
-    letterSpacing: -0.1,
+    letterSpacing: 0,
   },
   callout: {
     fontSize: 14,
@@ -84,14 +84,17 @@ export const TYPE = {
   title: {
     fontSize: 17,
     fontFamily: FONTS.medium,
+    letterSpacing: 0.1,
   },
   titleSemibold: {
     fontSize: 17,
     fontFamily: FONTS.semibold,
+    letterSpacing: 0.1,
   },
   titleBold: {
     fontSize: 18,
     fontFamily: FONTS.bold,
+    letterSpacing: 0.1,
   },
   button: {
     fontSize: 16,
@@ -144,7 +147,7 @@ export const GUTTER = {
 };
 
 export const COLORS = {
-  accent: '#3b79ff',
+  accent: '#094FD1',
   destructive: '#FF3B30',
   success: '#34C759',
   warning: '#FF9500',

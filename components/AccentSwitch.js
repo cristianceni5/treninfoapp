@@ -19,10 +19,9 @@ export default function AccentSwitch({
       onValueChange={onValueChange}
       disabled={disabled}
       trackColor={trackColor ?? { false: theme.colors.border, true: theme.colors.accent }}
-      thumbColor={thumbColor ?? theme.colors.onAccent}
+      thumbColor={thumbColor ?? '#FFFFFF'}
       ios_backgroundColor={ios_backgroundColor ?? theme.colors.border}
       {...rest}
     />
   );
 }
-

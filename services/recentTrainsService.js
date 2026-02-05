@@ -8,29 +8,30 @@ const norm = (v) => {
   return s ? s : null;
 };
 
+const stripRecentContext = (train) => {
+  if (!train || typeof train !== 'object') return train;
+  const {
+    date,
+    timestampRiferimento,
+    choice,
+    choiceId,
+    technical,
+    technicalId,
+    originName,
+    origine,
+    originCode,
+    codiceOrigine,
+    ...rest
+  } = train;
+  return rest;
+};
+
 const getTrainKey = (train) => {
   if (!train) return null;
   const number = norm(train.number ?? train.trainNumber) || '';
   if (!number) return norm(train.id) || null;
 
-  const choice = train.choice ?? train.choiceId ?? null;
-  const technical = norm(train.technical ?? train.technicalId);
-  const originName = norm(train.originName ?? train.origine);
-  const originCode = norm(train.originCode ?? train.codiceOrigine);
-  const timestampRiferimento = train.timestampRiferimento ?? train.timestampReference ?? null;
-  const date = norm(train.date);
-
-  const parts = [number];
-  if (choice !== null && choice !== undefined && String(choice).trim() !== '') parts.push(`choice:${String(choice).trim()}`);
-  if (technical) parts.push(`tech:${technical}`);
-  if (originName) parts.push(`origin:${originName}`);
-  if (originCode) parts.push(`originCode:${originCode}`);
-  if (timestampRiferimento !== null && timestampRiferimento !== undefined && String(timestampRiferimento).trim() !== '') {
-    parts.push(`ts:${String(timestampRiferimento).trim()}`);
-  }
-  if (date) parts.push(`date:${date}`);
-
-  return parts.join('|');
+  return number;
 };
 
 export const getRecentTrains = async (limit = 5) => {
@@ -44,11 +45,11 @@ export const getRecentTrains = async (limit = 5) => {
       const key = getTrainKey(t);
       if (!key || seen.has(key)) continue;
       seen.add(key);
-      deduped.push({ ...t, id: key });
+      deduped.push({ ...stripRecentContext(t), id: key });
     }
 
     // Ripulisci eventuali duplicati storici (es. id basati su timestamp).
-    const normalizedForStorage = deduped.slice(0, 10);
+    const normalizedForStorage = deduped.slice(0, 10).map(stripRecentContext);
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(normalizedForStorage));
 
     return deduped.slice(0, limit);
@@ -68,7 +69,7 @@ export const saveRecentTrain = async (train) => {
     if (!key) return;
 
     const without = list.filter((t) => getTrainKey(t) !== key);
-    const next = [{ ...train, id: key }, ...without].slice(0, 10);
+    const next = [{ ...stripRecentContext(train), id: key }, ...without].slice(0, 10).map(stripRecentContext);
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   } catch (error) {
     console.warn('Error saving recent train:', error);
@@ -106,9 +107,9 @@ export const overwriteRecentTrains = async (trains) => {
       const key = getTrainKey(t);
       if (!key || seen.has(key)) continue;
       seen.add(key);
-      deduped.push({ ...t, id: key });
+      deduped.push({ ...stripRecentContext(t), id: key });
     }
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(deduped.slice(0, 10)));
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(deduped.slice(0, 10).map(stripRecentContext)));
   } catch (error) {
     console.warn('Error overwriting recent trains:', error);
   }

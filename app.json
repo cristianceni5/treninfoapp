@@ -1,19 +1,25 @@
 {
   "expo": {
     "name": "Treninfo",
-    "slug": "Treninfo",
+    "scheme": "treninfo",
+    "slug": "treninfo",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/iconTreninfo-iOS-Default-1024x1024@1x.png",
+    "icon": "./assets/icone/prova-iOS-Default-1024x1024@1x.png",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
     "splash": {
-      "image": "./assets/iconTreninfo-iOS-Default-1024x1024@1x.png",
+      "image": "./assets/icone/prova-iOS-Default-1024x1024@1x.png",
       "resizeMode": "contain",
       "backgroundColor": "#1C1C1E"
     },
     "ios": {
+      "icon": {
+        "light": "./assets/icone/prova-iOS-Default-1024x1024@1x.png",
+        "dark": "./assets/icone/prova-iOS-Dark-1024x1024@1x.png",
+        "tinted": "./assets/icone/prova-iOS-TintedLight-1024x1024@1x.png"
+      },
       "bundleIdentifier": "com.cristianceni.treninfo",
+      "buildNumber": "1",
       "supportsTablet": true,
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Treninfo usa la tua posizione per mostrarti le stazioni ferroviarie nelle vicinanze."
@@ -21,8 +27,9 @@
     },
     "android": {
       "package": "com.cristianceni.treninfo",
+      "versionCode": 1,
       "adaptiveIcon": {
-        "foregroundImage": "./assets/iconTreninfo-iOS-Default-1024x1024@1x.png",
+        "foregroundImage": "./assets/icone/prova-iOS-Default-1024x1024@1x.png",
         "backgroundColor": "#1C1C1E"
       },
       "edgeToEdgeEnabled": true,
@@ -32,18 +39,11 @@
       ]
     },
     "web": {
-      "favicon": "./assets/iconTreninfo-iOS-Default-1024x1024@1x.png"
+      "favicon": "./assets/icone/prova-iOS-Default-1024x1024@1x.png"
     },
     "plugins": [
       "@react-native-community/datetimepicker",
-      [
-        "expo-notifications",
-        {
-          "enableBackgroundRemoteNotifications": false
-        }
-      ],
-      "./plugins/withLocalOnlyNotifications",
-      "expo-background-task"
+      "expo-router"
     ]
   }
 }

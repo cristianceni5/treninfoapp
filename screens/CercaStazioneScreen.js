@@ -1,47 +1,65 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, TextInput, FlatList, TouchableOpacity, Keyboard, Dimensions, Linking, Modal, ScrollView, Animated, Alert, LayoutAnimation, Platform, UIManager, RefreshControl } from 'react-native';
+import React, { useMemo, useState, useRef, useEffect } from 'react';
+import { View, Text, StyleSheet, TextInput, FlatList, TouchableOpacity, Keyboard, Dimensions, Linking, Modal, ScrollView, Animated, Alert, LayoutAnimation, Platform, UIManager, RefreshControl, ActivityIndicator } from 'react-native';
 import MapView, { Marker, PROVIDER_DEFAULT } from 'react-native-maps';
 import { Ionicons } from '@expo/vector-icons';
-import * as Location from 'expo-location';
-import * as Haptics from 'expo-haptics';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 import AnimatedScreen from '../components/AnimatedScreen';
+import CardLoading from '../components/CardLoading';
+import SectionPlaceholderCard from '../components/SectionPlaceholderCard';
+import SectionSkeleton from '../components/SectionSkeleton';
 import SwipeableRow from '../components/SwipeableRow';
-import ModernSpinner from '../components/ModernSpinner';
-import EdgeFade from '../components/EdgeFade';
+import { safeOpenURL } from '../utils/safeOpenURL';
 import { getAllStations, getStationByName, searchStations } from '../services/stationsService';
 import { getRegionName } from '../utils/regionLabels';
 import { getNearbyStations, formatDistance } from '../utils/locationUtils';
 import { getRecentStations, saveRecentStation, removeRecentStation, clearRecentStations, overwriteRecentStations } from '../services/recentStationsService';
 import { BORDER, GUTTER, HIT_SLOP, INSETS, RADIUS, SPACING, SPACE, TYPE } from '../utils/uiTokens';
 import { getStationArrivals, getStationDepartures } from '../services/apiService';
-import { cardShadow, floatingShadow, iconButtonShadow } from '../utils/uiStyles';
+import { cardShadow, floatingShadow, iconButtonShadow, getTrainSiglaColor, getTrainTitleParts } from '../utils/uiStyles';
+import { hapticImpact, hapticSelection, hapticModalClose, hapticModalOpen, ImpactFeedbackStyle } from '../utils/haptics';
+import useLocationPermission from '../hooks/useLocationPermission';
+import { isPermissionGranted } from '../utils/permissions';
+import * as Location from 'expo-location';
 
 const { width } = Dimensions.get('window');
+const EARLY_COLOR = '#4DA3FF';
+const ALLOW_MODAL_TO_MODAL_NAV = true;
+const MODAL_HEADER_TOP_OFFSET = SPACING.screenX;
+const MAP_HEIGHT = 150;
 
 export default function CercaStazioneScreen() {
   const { theme } = useTheme();
+  const insets = useSafeAreaInsets();
+  const tabBarHeight = Platform.OS === 'ios' ? 76 : 64;
+  const bottomPadding = SPACE.xxl + tabBarHeight + insets.bottom;
   const navigation = useNavigation();
   const route = useRoute();
+  const stackedFromTrain = route?.params?.stackedFromTrain === true;
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
+  const [isSearching, setIsSearching] = useState(false);
   const [selectedStation, setSelectedStation] = useState(null);
   const [showStationModal, setShowStationModal] = useState(false);
-  const [showMap, setShowMap] = useState(false);
+  const [stationModalStacked, setStationModalStacked] = useState(false);
   const [activePage, setActivePage] = useState(0);
   const scrollY = useRef(new Animated.Value(0)).current;
   const pagerRef = useRef(null);
+  const pagerScrollX = useRef(new Animated.Value(0)).current;
+  const searchDebounceRef = useRef(null);
+  const lastPageRef = useRef(0);
   const departuresListRef = useRef(null);
   const arrivalsListRef = useRef(null);
   const departuresOffsetRef = useRef(0);
   const arrivalsOffsetRef = useRef(0);
 
   // Stati per location e stazioni
-  const [locationPermission, setLocationPermission] = useState(null);
+  const { status: locationStatus, granted: locationGranted, syncStatus, requestPermission } = useLocationPermission({ autoCheck: false });
+  const locationPermission = locationStatus == null ? null : locationGranted;
   const [userLocation, setUserLocation] = useState(null);
   const [recentStations, setRecentStations] = useState([]);
+  const [recentStationsLoaded, setRecentStationsLoaded] = useState(false);
   const [nearbyStations, setNearbyStations] = useState([]);
   const [loadingLocation, setLoadingLocation] = useState(false);
   const [scrollEnabled, setScrollEnabled] = useState(true);
@@ -53,6 +71,7 @@ export default function CercaStazioneScreen() {
   const [mainRefreshing, setMainRefreshing] = useState(false);
   const [stationModalRefreshKey, setStationModalRefreshKey] = useState(0);
   const boardsRequestIdRef = useRef(0);
+  const [tabsWidth, setTabsWidth] = useState(0);
 
   const [undoPayload, setUndoPayload] = useState(null);
   const [undoMessage, setUndoMessage] = useState('');
@@ -62,22 +81,6 @@ export default function CercaStazioneScreen() {
   const [swipeResetVersion, setSwipeResetVersion] = useState(0);
   const returnToTrainRef = useRef(null);
   const initialStationModalPageRef = useRef(0);
-
-  const hapticSelection = () => {
-    try {
-      Haptics.selectionAsync();
-    } catch {
-      // ignore
-    }
-  };
-
-  const hapticImpact = (style = Haptics.ImpactFeedbackStyle.Light) => {
-    try {
-      Haptics.impactAsync(style);
-    } catch {
-      // ignore
-    }
-  };
 
   useEffect(() => {
     const token = route?.params?.prefillToken;
@@ -111,6 +114,8 @@ export default function CercaStazioneScreen() {
     const stationName = nameRaw.trim();
     if (!stationName) return;
 
+    const openStationStacked = route?.params?.openStationStacked === true;
+    setStationModalStacked(openStationStacked);
     returnToTrainRef.current = route?.params?.returnTrain ? { train: route.params.returnTrain, token: route?.params?.returnTrainToken ?? token } : null;
 
     const station = getStationByName(stationName);
@@ -153,22 +158,27 @@ export default function CercaStazioneScreen() {
 
   const initLocationPermission = async () => {
     try {
-      const { status } = await Location.getForegroundPermissionsAsync();
+      const status = await syncStatus();
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      const granted = status === 'granted';
-      setLocationPermission(granted);
+      const granted = isPermissionGranted(status);
       if (granted) {
         getUserLocation();
+      } else {
+        setNearbyStations([]);
       }
     } catch (error) {
       console.error('Errore nel controllare i permessi per la posizione:', error);
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      setLocationPermission(false);
+      setNearbyStations([]);
     }
   };
 
   useEffect(() => {
     return () => {
+      if (searchDebounceRef.current) {
+        clearTimeout(searchDebounceRef.current);
+        searchDebounceRef.current = null;
+      }
       if (undoTimeoutRef.current) {
         clearTimeout(undoTimeoutRef.current);
         undoTimeoutRef.current = null;
@@ -180,9 +190,9 @@ export default function CercaStazioneScreen() {
     if (!showStationModal) return;
     const page = Number.isFinite(Number(initialStationModalPageRef.current)) ? Number(initialStationModalPageRef.current) : 0;
     setActivePage(page);
+    lastPageRef.current = page;
     departuresOffsetRef.current = 0;
     arrivalsOffsetRef.current = 0;
-
     requestAnimationFrame(() => {
       pagerRef.current?.scrollToOffset?.({ offset: page * width, animated: false });
       departuresListRef.current?.scrollTo?.({ y: 0, animated: false });
@@ -192,18 +202,20 @@ export default function CercaStazioneScreen() {
 
   // Richiedi i permessi per la posizione
   const requestLocationPermission = async () => {
+    hapticSelection();
     try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
+      const status = await requestPermission();
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      setLocationPermission(status === 'granted');
 
-      if (status === 'granted') {
+      if (isPermissionGranted(status)) {
         getUserLocation();
+      } else {
+        setNearbyStations([]);
       }
     } catch (error) {
       console.error('Errore nel richiedere i permessi per la posizione:', error);
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      setLocationPermission(false);
+      setNearbyStations([]);
     }
   };
 
@@ -247,6 +259,7 @@ export default function CercaStazioneScreen() {
     const recent = await getRecentStations(5);
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setRecentStations(recent);
+    setRecentStationsLoaded(true);
   };
 
   const refreshMain = async () => {
@@ -329,10 +342,9 @@ export default function CercaStazioneScreen() {
 
   const handleDeleteRecentStation = async (station) => {
     if (!station?.id) return;
-    hapticImpact(Haptics.ImpactFeedbackStyle.Medium);
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    hapticImpact(ImpactFeedbackStyle.Medium);
+    setRecentStations((prev) => prev.filter((item) => item?.id !== station.id));
     await removeRecentStation(station.id);
-    await loadRecentStations();
     showUndoToast({
       payload: { kind: 'single', station },
       message: station?.name ? `Rimossa “${station.name}”` : 'Stazione rimossa',
@@ -369,6 +381,7 @@ export default function CercaStazioneScreen() {
   };
 
   const openAppSettings = async () => {
+    hapticSelection();
     try {
       await Linking.openSettings();
     } catch (error) {
@@ -378,15 +391,10 @@ export default function CercaStazioneScreen() {
 
   const handleSearch = (text) => {
     setSearchQuery(text);
-    if (text.trim().length >= 2) {
-      const results = searchStations(text, 15);
-      setSearchResults(results);
-    } else {
-      setSearchResults([]);
-    }
   };
 
   const handleSelectStation = async (station) => {
+    hapticModalOpen();
     // Salva la stazione nelle recenti
     await saveRecentStation(station);
     await loadRecentStations();
@@ -394,19 +402,32 @@ export default function CercaStazioneScreen() {
     setSelectedStation(station);
     setSearchQuery('');
     setSearchResults([]);
+    setIsSearching(false);
     setShowStationModal(true);
     setStationModalRefreshKey((k) => k + 1);
     Keyboard.dismiss();
   };
 
   const closeStationModal = () => {
-    hapticSelection();
+    hapticModalClose();
     setShowStationModal(false);
+    setStationModalStacked(false);
     setSelectedStation(null);
     setBoardsError('');
     setBoardsLoading(false);
     setDepartures([]);
     setArrivals([]);
+
+    if (stationModalStacked) {
+      return;
+    }
+
+    if (stackedFromTrain) {
+      requestAnimationFrame(() => {
+        navigation.navigate('CercaTreno');
+      });
+      return;
+    }
 
     const payload = returnToTrainRef.current;
     if (payload?.train) {
@@ -420,11 +441,12 @@ export default function CercaStazioneScreen() {
 
   const openInMaps = () => {
     if (!selectedStation?.name) return;
+    hapticSelection();
     const hasCoords = Number.isFinite(Number(selectedStation?.lat)) && Number.isFinite(Number(selectedStation?.lon));
     const url = hasCoords
       ? `http://maps.apple.com/?q=${encodeURIComponent(selectedStation.name)}&ll=${selectedStation.lat},${selectedStation.lon}`
       : `http://maps.apple.com/?q=${encodeURIComponent(selectedStation.name)}`;
-    Linking.openURL(url);
+    safeOpenURL(url, { message: 'Impossibile aprire Mappe.' });
   };
 
 
@@ -566,9 +588,31 @@ export default function CercaStazioneScreen() {
     hapticSelection();
     setSearchQuery('');
     setSearchResults([]);
+    setIsSearching(false);
     setSelectedStation(null);
-    setShowMap(false);
   };
+
+  useEffect(() => {
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    const q = searchQuery.trim();
+    if (q.length < 2) {
+      setIsSearching(false);
+      setSearchResults([]);
+      return;
+    }
+
+    setIsSearching(true);
+    searchDebounceRef.current = setTimeout(() => {
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      const results = searchStations(q, 15);
+      setSearchResults(results);
+      setIsSearching(false);
+    }, 250);
+
+    return () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    };
+  }, [searchQuery]);
 
   const renderStationItem = ({ item }) => {
     const noDivider = item?._noDivider === true;
@@ -609,7 +653,6 @@ export default function CercaStazioneScreen() {
 
   const hasStationCoords =
     Number.isFinite(Number(selectedStation?.lat)) && Number.isFinite(Number(selectedStation?.lon));
-  const MAP_MAX_HEIGHT = 230;
   const italyRegion = {
     latitude: 41.8719,
     longitude: 12.5674,
@@ -628,11 +671,11 @@ export default function CercaStazioneScreen() {
   const openTrainFromBoard = (row) => {
     const trainNumber = typeof row?.trainNumber === 'string' ? row.trainNumber.trim() : '';
     if (!trainNumber) return;
+    if (!ALLOW_MODAL_TO_MODAL_NAV) return;
 
     const returnStation = selectedStation ? { ...selectedStation } : null;
     if (!returnStation) return;
 
-    hapticSelection();
     // Se questo modal era stato aperto da un treno, non tornare a quel treno: stiamo aprendo un altro treno.
     returnToTrainRef.current = null;
 
@@ -650,6 +693,8 @@ export default function CercaStazioneScreen() {
   };
 
   const renderTrainRow = ({ item }, mode) => {
+    const trainNumber = typeof item?.trainNumber === 'string' ? item.trainNumber.trim() : '';
+    const canOpenTrain = ALLOW_MODAL_TO_MODAL_NAV && Boolean(trainNumber);
     const showDestination = mode === 'departures';
     const primaryLine = showDestination ? item.destination : item.origin;
 
@@ -671,10 +716,10 @@ export default function CercaStazioneScreen() {
               <View
                 style={[
                   styles.delayPill,
-                  { backgroundColor: theme.colors.accent + '20', borderColor: theme.colors.accent },
+                  { backgroundColor: EARLY_COLOR + '20', borderColor: EARLY_COLOR },
                 ]}
               >
-                <Text style={[styles.delayPillText, { color: theme.colors.accent }]}>{item.delay} min</Text>
+                <Text style={[styles.delayPillText, { color: EARLY_COLOR }]}>{item.delay} min</Text>
               </View>
             )
             : (
@@ -692,23 +737,34 @@ export default function CercaStazioneScreen() {
     return (
       <TouchableOpacity
         style={styles.trainItem}
-        activeOpacity={0.6}
-        onPress={() => openTrainFromBoard(item)}
-        disabled={!item?.trainNumber}
+        activeOpacity={canOpenTrain ? 0.6 : 1}
+        onPress={canOpenTrain ? () => openTrainFromBoard(item) : undefined}
+        disabled={!canOpenTrain}
       >
         <View style={styles.trainHeader}>
           <View style={styles.trainLeftSection}>
             <View style={styles.trainTypeAndNumber}>
-              {item.trainType ? (
-                <Text style={[styles.trainType, { color: theme.colors.textSecondary }]}>
-                  {item.trainType}
-                </Text>
-              ) : null}
-              {item.trainNumber ? (
-                <Text style={[styles.trainNumber, { color: theme.colors.text }]}>
-                  {item.trainNumber}
-                </Text>
-              ) : null}
+              {(() => {
+                const parts = getTrainTitleParts(item.trainType, item.trainNumber);
+                if (!parts.sigla && !parts.number) return null;
+                return (
+                  <>
+                    {parts.sigla ? (
+                      <Text style={[styles.trainType, { color: getTrainSiglaColor(parts.sigla, theme) }]}>
+                        {parts.sigla}
+                      </Text>
+                    ) : null}
+                    {parts.showAv ? (
+                      <Text style={[styles.trainAv, { color: theme.colors.textSecondary }]}>AV</Text>
+                    ) : null}
+                    {parts.number ? (
+                      <Text style={[styles.trainNumber, { color: theme.colors.text }]}>
+                        {parts.number}
+                      </Text>
+                    ) : null}
+                  </>
+                );
+              })()}
             </View>
             <View style={styles.trainTimeRow}>
               <Text style={[styles.trainTime, { color: theme.colors.text }]}>{item.time}</Text>
@@ -744,12 +800,30 @@ export default function CercaStazioneScreen() {
   };
 
   const showSearchResults = searchQuery.trim().length >= 2;
-  const stationResults = Array.isArray(searchResults) ? searchResults : [];
-  const resultsForRender = stationResults.map((s, idx) => ({ ...s, _noDivider: idx === stationResults.length - 1 }));
+  const stationResults = useMemo(() => (Array.isArray(searchResults) ? searchResults : []), [searchResults]);
+  const resultsForRender = useMemo(
+    () => stationResults.map((s, idx) => ({ ...s, _noDivider: idx === stationResults.length - 1 })),
+    [stationResults]
+  );
+  const canRefreshBoards = Boolean(showStationModal && selectedStation?.id);
+
+  const switchToPage = (page) => {
+    if (page === activePage) return;
+    hapticSelection();
+    setActivePage(page);
+    lastPageRef.current = page;
+    pagerRef.current?.scrollToOffset?.({ offset: page * screenWidth, animated: true });
+  };
+
+  const handleRefreshBoards = () => {
+    if (!canRefreshBoards) return;
+    hapticSelection();
+    setStationModalRefreshKey((k) => k + 1);
+  };
 
   return (
     <SafeAreaView edges={['top']} style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <AnimatedScreen>
+        <AnimatedScreen>
         <View style={styles.headerContainer}>
           {/* Search Section */}
           <View style={styles.searchSection}>
@@ -775,18 +849,15 @@ export default function CercaStazioneScreen() {
                 autoCapitalize="none"
                 autoCorrect={false}
               />
-              {searchQuery.length > 0 ? (
+              {isSearching ? (
+                <ActivityIndicator size="small" color={theme.colors.textSecondary} />
+              ) : searchQuery.length > 0 ? (
                 <TouchableOpacity onPress={clearSearch} activeOpacity={0.6}>
                   <Ionicons name="close-circle" size={20} color={theme.colors.textSecondary} />
                 </TouchableOpacity>
               ) : null}
             </View>
 
-            {recentStations.length === 0 ? (
-              <Text style={[styles.searchDescription, { color: theme.colors.textSecondary }]}>
-                Inserisci il nome di una stazione ferroviaria per visualizzarne i dettagli
-              </Text>
-            ) : null}
           </View>
         </View>
 
@@ -794,7 +865,7 @@ export default function CercaStazioneScreen() {
           <ScrollView
             style={styles.scrollView}
             showsVerticalScrollIndicator={false}
-            contentContainerStyle={styles.scrollContent}
+            contentContainerStyle={[styles.scrollContent, { paddingBottom: bottomPadding }]}
             scrollEnabled={scrollEnabled}
             keyboardShouldPersistTaps="handled"
             refreshControl={
@@ -816,6 +887,10 @@ export default function CercaStazioneScreen() {
                     resultsForRender.map((item, idx) => (
                       <React.Fragment key={`${String(item.id ?? 'station')}-${idx}`}>{renderStationItem({ item })}</React.Fragment>
                     ))
+                  ) : isSearching ? (
+                    <View style={styles.resultsEmptyState}>
+                      <CardLoading label="Ricerca..." color={theme.colors.accent} textStyle={{ color: theme.colors.textSecondary }} />
+                    </View>
                   ) : (
                     <View style={styles.resultsEmptyState}>
                       <Text style={[styles.resultsEmptyTitle, { color: theme.colors.text }]}>Nessun risultato</Text>
@@ -829,7 +904,7 @@ export default function CercaStazioneScreen() {
             ) : (
               <>
                 {/* Stazioni Recenti */}
-                {recentStations.length > 0 && (
+                {recentStations.length > 0 ? (
                   <View style={styles.section}>
                     <View style={styles.sectionHeaderRow}>
                       <Text style={[styles.sectionTitle, { color: theme.colors.textSecondary, marginBottom: 0, marginLeft: 0 }]}>
@@ -888,6 +963,13 @@ export default function CercaStazioneScreen() {
                       ))}
                     </View>
                   </View>
+                ) : recentStationsLoaded ? (
+                  <SectionPlaceholderCard
+                    title="STAZIONI RECENTI"
+                    description="Qui trovi le stazioni consultate di recente, pronte da riaprire con un tap."
+                  />
+                ) : (
+                  <SectionSkeleton title="STAZIONI RECENTI" rows={3} />
                 )}
 
                 {/* Stazioni Vicine */}
@@ -905,15 +987,7 @@ export default function CercaStazioneScreen() {
                           cardShadow(theme),
                         ]}
                       >
-                        <View style={styles.listItemLoading}>
-                          <ModernSpinner
-                            size={18}
-                            thickness={2}
-                            color={theme.colors.accent}
-                            innerStyle={{ backgroundColor: theme.colors.card }}
-                          />
-                          <Text style={[styles.listItemLoadingText, { color: theme.colors.textSecondary }]}>Ricerca in corso...</Text>
-                        </View>
+                        <CardLoading label="Caricamento..." color={theme.colors.accent} textStyle={{ color: theme.colors.textSecondary }} />
                       </View>
                     ) : nearbyStations.length > 0 ? (
                       <View
@@ -1031,7 +1105,6 @@ export default function CercaStazioneScreen() {
             )}
           </ScrollView>
 
-          <EdgeFade height={SPACE.xl} style={styles.topEdgeFade} />
         </View>
 
         {undoVisible && (
@@ -1065,234 +1138,306 @@ export default function CercaStazioneScreen() {
               <Text style={[styles.undoToastText, { color: theme.colors.text }]} numberOfLines={1}>
                 {undoMessage}
               </Text>
-              <TouchableOpacity
-                onPress={handleUndoDeleteRecentStation}
-                activeOpacity={0.75}
-                hitSlop={HIT_SLOP.sm}
-              >
-                <Text style={[styles.undoToastAction, { color: theme.colors.accent }]}>
-                  ANNULLA
-                </Text>
-              </TouchableOpacity>
+              {undoPayload ? (
+                <TouchableOpacity
+                  onPress={handleUndoDeleteRecentStation}
+                  activeOpacity={0.75}
+                  hitSlop={HIT_SLOP.sm}
+                >
+                  <Text style={[styles.undoToastAction, { color: theme.colors.accent }]}>
+                    ANNULLA
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
             </View>
           </Animated.View>
         )}
+        </AnimatedScreen>
 
-        {/* Modal stazione */}
+      {/* Modal stazione */}
+      {showStationModal ? (
         <Modal
-          visible={showStationModal}
+          visible={true}
           animationType="slide"
-          presentationStyle="pageSheet"
+          presentationStyle={stationModalStacked || stackedFromTrain ? 'overFullScreen' : 'pageSheet'}
           onRequestClose={closeStationModal}
         >
           <View style={[styles.modalContainer, { backgroundColor: theme.colors.background, flex: 1 }]}>
-            {/* Header con X sempre disponibile */}
-            <View style={[styles.modalHeader, { backgroundColor: 'transparent' }]}>
-              <TouchableOpacity
-                onPress={closeStationModal}
+          {/* Header con X sempre disponibile */}
+          <View style={[styles.modalHeader, { backgroundColor: 'transparent', top: MODAL_HEADER_TOP_OFFSET }]}>
+            <TouchableOpacity
+              onPress={closeStationModal}
+              style={[
+                styles.closeButton,
+                {
+                  backgroundColor: theme.colors.card,
+                  borderColor: theme.colors.border,
+                  borderWidth: BORDER.card,
+                },
+                iconButtonShadow(theme),
+              ]}
+              activeOpacity={0.7}
+              hitSlop={HIT_SLOP.md}
+            >
+              <Ionicons name="close" size={20} color={theme.colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          <View style={[styles.mapSection, { backgroundColor: theme.colors.card }, cardShadow(theme)]}>
+            <MapView
+              key={selectedStation?.id || 'italy'}
+              style={styles.mapFull}
+              provider={PROVIDER_DEFAULT}
+              initialRegion={stationRegion}
+              scrollEnabled={false}
+              zoomEnabled={false}
+              pitchEnabled={false}
+              rotateEnabled={false}
+            >
+              {hasStationCoords ? (
+                <Marker coordinate={{ latitude: Number(selectedStation.lat), longitude: Number(selectedStation.lon) }} />
+              ) : null}
+            </MapView>
+            {!hasStationCoords ? (
+              <View style={[styles.mapFallback, { backgroundColor: theme.colors.card + 'E6' }]}>
+                <Text style={[styles.mapFallbackText, { color: theme.colors.textSecondary }]}>
+                  Coordinate non disponibili per questa stazione
+                </Text>
+              </View>
+            ) : null}
+
+            <TouchableOpacity
+              onPress={handleRefreshBoards}
+              activeOpacity={0.75}
+              hitSlop={HIT_SLOP.sm}
+              style={[
+                styles.closeButton,
+                styles.mapRefreshButton,
+                {
+                  backgroundColor: theme.colors.card,
+                  borderColor: theme.colors.border,
+                  borderWidth: BORDER.card,
+                  opacity: boardsLoading ? 0.6 : 1,
+                },
+                iconButtonShadow(theme),
+              ]}
+              disabled={!canRefreshBoards || boardsLoading}
+              accessibilityLabel="Ricarica"
+            >
+              {boardsLoading ? (
+                <ActivityIndicator size="small" color={theme.colors.textSecondary} />
+              ) : (
+                <Ionicons name="refresh" size={18} color={theme.colors.text} />
+              )}
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.modalBody}>
+            <View style={styles.stationInfoSection}>
+              <View style={styles.stationNameRow}>
+                <View style={styles.stationTextContainer}>
+                  <Text style={[styles.stationName, { color: theme.colors.text }]}>
+                    {selectedStation?.name}
+                  </Text>
+                  {(selectedStation?.city || selectedStation?.region) && (
+                    <Text style={[styles.regionLabel, { color: theme.colors.textSecondary }]}>
+                      {selectedStation?.city
+                        ? `${selectedStation.city}, ${getRegionName(selectedStation.region)}`
+                        : getRegionName(selectedStation.region)}
+                    </Text>
+                  )}
+                </View>
+                <View style={styles.stationHeaderActions}>
+                  <TouchableOpacity
+                    style={[styles.navigateButtonInline, { backgroundColor: theme.colors.accent }]}
+                    onPress={openInMaps}
+                    activeOpacity={0.7}
+                    disabled={!selectedStation?.name}
+                  >
+                    <Ionicons name="navigate" size={18} color={theme.colors.onAccent} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+
+            <View
+              style={[
+                styles.tabsContainer,
+                { backgroundColor: theme.colors.card, borderColor: theme.colors.border },
+                cardShadow(theme),
+              ]}
+              onLayout={(e) => setTabsWidth(e.nativeEvent.layout.width)}
+            >
+              <Animated.View
+                pointerEvents="none"
                 style={[
-                  styles.closeButton,
+                  styles.tabsIndicator,
                   {
-                    backgroundColor: theme.colors.card,
-                    borderColor: theme.colors.border,
-                    borderWidth: BORDER.card,
+                    width: tabsWidth ? (tabsWidth - 8) / 2 : 0,
+                    backgroundColor: theme.colors.accent,
+                    transform: [
+                      {
+                        translateX: tabsWidth
+                          ? pagerScrollX.interpolate({
+                              inputRange: [0, screenWidth],
+                              outputRange: [0, (tabsWidth - 8) / 2],
+                              extrapolate: 'clamp',
+                            })
+                          : 0,
+                      },
+                    ],
                   },
-                  iconButtonShadow(theme),
                 ]}
-                activeOpacity={0.7}
-                hitSlop={HIT_SLOP.md}
-              >
-                <Ionicons name="close" size={20} color={theme.colors.text} />
+              />
+              <TouchableOpacity style={styles.tabButton} activeOpacity={0.7} onPress={() => switchToPage(0)}>
+                <Ionicons
+                  name="arrow-up-outline"
+                  size={16}
+                  color={activePage === 0 ? theme.colors.onAccent : theme.colors.textSecondary}
+                />
+                <Text style={[styles.tabText, { color: activePage === 0 ? theme.colors.onAccent : theme.colors.textSecondary }]}>
+                  Partenze
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.tabButton} activeOpacity={0.7} onPress={() => switchToPage(1)}>
+                <Ionicons
+                  name="arrow-down-outline"
+                  size={16}
+                  color={activePage === 1 ? theme.colors.onAccent : theme.colors.textSecondary}
+                />
+                <Text style={[styles.tabText, { color: activePage === 1 ? theme.colors.onAccent : theme.colors.textSecondary }]}>
+                  Arrivi
+                </Text>
               </TouchableOpacity>
             </View>
 
-            {/* Mappa grande -> collassa con scroll (anche senza coordinate) */}
-            <View
-              pointerEvents="none"
-              style={[
-                styles.mapSection,
+            <Animated.FlatList
+              ref={pagerRef}
+              horizontal
+              pagingEnabled
+              showsHorizontalScrollIndicator={false}
+              decelerationRate="fast"
+              scrollEventThrottle={16}
+              data={[{ key: 'partenze' }, { key: 'arrivi' }]}
+              keyExtractor={(item) => item.key}
+              onMomentumScrollEnd={(event) => {
+                const offsetX = event.nativeEvent.contentOffset.x;
+                const pageIndex = Math.round(offsetX / screenWidth);
+                if (pageIndex !== activePage) {
+                  setActivePage(pageIndex);
+                  lastPageRef.current = pageIndex;
+                }
+              }}
+              onScroll={Animated.event(
+                [{ nativeEvent: { contentOffset: { x: pagerScrollX } } }],
                 {
-                  height: MAP_MAX_HEIGHT,
-                },
-              ]}
-            >
-              <MapView
-                key={selectedStation?.id || 'italy'}
-                style={styles.mapFull}
-                provider={PROVIDER_DEFAULT}
-                initialRegion={stationRegion}
-                scrollEnabled={false}
-                zoomEnabled={false}
-                pitchEnabled={false}
-                rotateEnabled={false}
-              >
-                {hasStationCoords ? (
-                  <Marker coordinate={{ latitude: Number(selectedStation.lat), longitude: Number(selectedStation.lon) }} />
-                ) : null}
-              </MapView>
-            </View>
-
-            <Animated.View
-              style={[
-                styles.modalBody,
-                {
-                  paddingTop: MAP_MAX_HEIGHT,
-                },
-              ]}
-            >
-              {/* Header sticky con info */}
-              <View style={[styles.stickyHeader, { backgroundColor: theme.colors.background }]}>
-                <View style={styles.stationInfoSection}>
-                  <View style={styles.stationNameRow}>
-                    <View style={styles.stationTextContainer}>
-                      <Text style={[styles.stationName, { color: theme.colors.text }]}>
-                        {selectedStation?.name}
-                      </Text>
-                      {(selectedStation?.city || selectedStation?.region) && (
-                        <Text style={[styles.regionLabel, { color: theme.colors.textSecondary }]}>
-                          {selectedStation?.city
-                            ? `${selectedStation.city}, ${getRegionName(selectedStation.region)}`
-                            : getRegionName(selectedStation.region)}
-                        </Text>
-                      )}
-                    </View>
-                    <TouchableOpacity
-                      style={[styles.navigateButtonInline, { backgroundColor: theme.colors.accent }]}
-                      onPress={openInMaps}
-                      activeOpacity={0.7}
-                      disabled={!selectedStation?.name}
+                  useNativeDriver: true,
+                  listener: (event) => {
+                    const offsetX = event.nativeEvent.contentOffset.x;
+                    const pageIndex = offsetX >= screenWidth / 2 ? 1 : 0;
+                    if (pageIndex !== lastPageRef.current) {
+                      lastPageRef.current = pageIndex;
+                      setActivePage(pageIndex);
+                    }
+                  },
+                }
+              )}
+              renderItem={({ item }) => (
+                <View style={{ width: screenWidth, flex: 1 }}>
+                  {item.key === 'partenze' ? (
+                    <Animated.ScrollView
+                      ref={departuresListRef}
+                      style={styles.pageScroll}
+                      contentContainerStyle={styles.pageScrollContent}
+                      showsVerticalScrollIndicator={false}
+                      scrollEventThrottle={16}
+                      nestedScrollEnabled
+                      onScroll={(e) => {
+                        departuresOffsetRef.current = e?.nativeEvent?.contentOffset?.y ?? 0;
+                      }}
                     >
-                      <Ionicons name="navigate" size={18} color={theme.colors.onAccent} />
-                    </TouchableOpacity>
-                  </View>
+                      <View
+                        style={[
+                          styles.trainsCard,
+                          { backgroundColor: theme.colors.card, borderColor: theme.colors.border },
+                        ]}
+                      >
+                        <View style={styles.cardListContent}>
+                          {boardsLoading ? (
+                            <CardLoading label="Caricamento..." color={theme.colors.accent} textStyle={{ color: theme.colors.textSecondary }} />
+                          ) : boardsError ? (
+                            <View style={styles.boardsEmptyRow}>
+                              <Text style={[styles.emptyLabel, { color: theme.colors.destructive }]}>{boardsError}</Text>
+                            </View>
+                          ) : departures.length === 0 ? (
+                            <View style={styles.boardsEmptyRow}>
+                              <Text style={[styles.emptyLabel, { color: theme.colors.textSecondary }]}>Nessuna partenza trovata</Text>
+                            </View>
+                          ) : (
+                            departures.map((row, index) => (
+                              <View key={String(row.id ?? `dep-${index}`)}>
+                                {renderTrainRow({ item: row }, 'departures')}
+                                {index < departures.length - 1 ? (
+                                  <View style={[styles.separator, { backgroundColor: theme.colors.border }]} />
+                                ) : null}
+                              </View>
+                            ))
+                          )}
+                        </View>
+                      </View>
+                    </Animated.ScrollView>
+                  ) : (
+                    <Animated.ScrollView
+                      ref={arrivalsListRef}
+                      style={styles.pageScroll}
+                      contentContainerStyle={styles.pageScrollContent}
+                      showsVerticalScrollIndicator={false}
+                      scrollEventThrottle={16}
+                      nestedScrollEnabled
+                      onScroll={(e) => {
+                        arrivalsOffsetRef.current = e?.nativeEvent?.contentOffset?.y ?? 0;
+                      }}
+                    >
+                      <View
+                        style={[
+                          styles.trainsCard,
+                          { backgroundColor: theme.colors.card, borderColor: theme.colors.border },
+                        ]}
+                      >
+                        <View style={styles.cardListContent}>
+                          {boardsLoading ? (
+                            <CardLoading label="Caricamento..." color={theme.colors.accent} textStyle={{ color: theme.colors.textSecondary }} />
+                          ) : boardsError ? (
+                            <View style={styles.boardsEmptyRow}>
+                              <Text style={[styles.emptyLabel, { color: theme.colors.destructive }]}>{boardsError}</Text>
+                            </View>
+                          ) : arrivals.length === 0 ? (
+                            <View style={styles.boardsEmptyRow}>
+                              <Text style={[styles.emptyLabel, { color: theme.colors.textSecondary }]}>Nessun arrivo trovato</Text>
+                            </View>
+                          ) : (
+                            arrivals.map((row, index) => (
+                              <View key={String(row.id ?? `arr-${index}`)}>
+                                {renderTrainRow({ item: row }, 'arrivals')}
+                                {index < arrivals.length - 1 ? (
+                                  <View style={[styles.separator, { backgroundColor: theme.colors.border }]} />
+                                ) : null}
+                              </View>
+                            ))
+                          )}
+                        </View>
+                      </View>
+                    </Animated.ScrollView>
+                  )}
                 </View>
-              </View>
-
-              <FlatList
-                ref={pagerRef}
-                horizontal
-                pagingEnabled
-                showsHorizontalScrollIndicator={false}
-                decelerationRate="fast"
-                data={[{ key: 'partenze' }, { key: 'arrivi' }]}
-                keyExtractor={(item) => item.key}
-                onMomentumScrollEnd={(event) => {
-                  const offsetX = event.nativeEvent.contentOffset.x;
-                  const pageIndex = Math.round(offsetX / screenWidth);
-                  if (pageIndex !== activePage) setActivePage(pageIndex);
-                }}
-                renderItem={({ item }) => (
-                  <View style={{ width: screenWidth, flex: 1 }}>
-                    {item.key === 'partenze' ? (
-                      <Animated.ScrollView
-                        ref={departuresListRef}
-                        style={styles.pageScroll}
-                        contentContainerStyle={styles.pageScrollContent}
-                        showsVerticalScrollIndicator={false}
-                        scrollEventThrottle={16}
-                        nestedScrollEnabled
-                        onScroll={(e) => {
-                          departuresOffsetRef.current = e?.nativeEvent?.contentOffset?.y ?? 0;
-                        }}
-                      >
-                        <Text style={[styles.modalSectionTitle, { color: theme.colors.textSecondary }]}>PARTENZE</Text>
-                        <View
-                          style={[
-                            styles.trainsCard,
-                            { backgroundColor: theme.colors.card, borderColor: theme.colors.border },
-                          ]}
-                        >
-                          <View style={styles.cardListContent}>
-                            {boardsLoading ? (
-                              <View style={styles.boardsEmptyRow}>
-                                <ModernSpinner
-                                  size={28}
-                                  thickness={3}
-                                  color={theme.colors.accent}
-                                  innerStyle={{ backgroundColor: theme.colors.card }}
-                                />
-                              </View>
-                            ) : boardsError ? (
-                              <View style={styles.boardsEmptyRow}>
-                                <Text style={[styles.emptyLabel, { color: theme.colors.destructive }]}>{boardsError}</Text>
-                              </View>
-                            ) : departures.length === 0 ? (
-                              <View style={styles.boardsEmptyRow}>
-                                <Text style={[styles.emptyLabel, { color: theme.colors.textSecondary }]}>Nessuna partenza trovata</Text>
-                              </View>
-                            ) : (
-                              departures.map((row, index) => (
-                                <View key={String(row.id ?? `dep-${index}`)}>
-                                  {renderTrainRow({ item: row }, 'departures')}
-                                  {index < departures.length - 1 ? (
-                                    <View style={[styles.separator, { backgroundColor: theme.colors.border }]} />
-                                  ) : null}
-                                </View>
-                              ))
-                            )}
-                          </View>
-                        </View>
-                      </Animated.ScrollView>
-                    ) : (
-                      <Animated.ScrollView
-                        ref={arrivalsListRef}
-                        style={styles.pageScroll}
-                        contentContainerStyle={styles.pageScrollContent}
-                        showsVerticalScrollIndicator={false}
-                        scrollEventThrottle={16}
-                        nestedScrollEnabled
-                        onScroll={(e) => {
-                          arrivalsOffsetRef.current = e?.nativeEvent?.contentOffset?.y ?? 0;
-                        }}
-                      >
-                        <Text style={[styles.modalSectionTitle, { color: theme.colors.textSecondary }]}>ARRIVI</Text>
-                        <View
-                          style={[
-                            styles.trainsCard,
-                            { backgroundColor: theme.colors.card, borderColor: theme.colors.border },
-                          ]}
-                        >
-                          <View style={styles.cardListContent}>
-                            {boardsLoading ? (
-                              <View style={styles.boardsEmptyRow}>
-                                <ModernSpinner
-                                  size={28}
-                                  thickness={3}
-                                  color={theme.colors.accent}
-                                  innerStyle={{ backgroundColor: theme.colors.card }}
-                                />
-                              </View>
-                            ) : boardsError ? (
-                              <View style={styles.boardsEmptyRow}>
-                                <Text style={[styles.emptyLabel, { color: theme.colors.destructive }]}>{boardsError}</Text>
-                              </View>
-                            ) : arrivals.length === 0 ? (
-                              <View style={styles.boardsEmptyRow}>
-                                <Text style={[styles.emptyLabel, { color: theme.colors.textSecondary }]}>Nessun arrivo trovato</Text>
-                              </View>
-                            ) : (
-                              arrivals.map((row, index) => (
-                                <View key={String(row.id ?? `arr-${index}`)}>
-                                  {renderTrainRow({ item: row }, 'arrivals')}
-                                  {index < arrivals.length - 1 ? (
-                                    <View style={[styles.separator, { backgroundColor: theme.colors.border }]} />
-                                  ) : null}
-                                </View>
-                              ))
-                            )}
-                          </View>
-                        </View>
-                      </Animated.ScrollView>
-                    )}
-                  </View>
-                )}
-                style={styles.pager}
-              />
-            </Animated.View>
-
+              )}
+              style={styles.pager}
+            />
           </View>
+
+        </View>
         </Modal>
-      </AnimatedScreen>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -1310,13 +1455,6 @@ const styles = StyleSheet.create({
   },
   scrollArea: {
     flex: 1,
-  },
-  topEdgeFade: {
-    position: 'absolute',
-    top: -SPACE.sm,
-    left: 0,
-    right: 0,
-    zIndex: 10,
   },
   scrollContent: {
     paddingHorizontal: SPACING.screenX,
@@ -1347,11 +1485,6 @@ const styles = StyleSheet.create({
     flex: 1,
     ...TYPE.body,
   },
-  searchDescription: {
-    ...TYPE.caption,
-    marginTop: SPACE.sm,
-    marginHorizontal: SPACING.screenX,
-  },
   resultsContainer: {
     borderRadius: RADIUS.card,
     borderWidth: BORDER.card,
@@ -1380,6 +1513,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACE.lg,
     borderBottomWidth: BORDER.hairline,
     gap: SPACE.md,
+    position: 'relative',
   },
   resultTextContainer: {
     flex: 1,
@@ -1407,46 +1541,6 @@ const styles = StyleSheet.create({
   detailLabel: {
     ...TYPE.subheadline,
   },
-  mapToggleButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: SPACE.md,
-    paddingHorizontal: SPACE.lg,
-    borderRadius: RADIUS.button,
-    borderWidth: BORDER.card,
-    gap: SPACE.sm,
-  },
-  mapToggleText: {
-    ...TYPE.subheadlineMedium,
-  },
-  mapContainer: {
-    borderRadius: RADIUS.card,
-    overflow: 'hidden',
-    height: 180,
-    marginTop: SPACE.md,
-    position: 'relative',
-  },
-  map: {
-    width: '100%',
-    height: '100%',
-  },
-  mapOverlay: {
-    position: 'absolute',
-    bottom: SPACE.md,
-    left: SPACE.md,
-    right: SPACE.md,
-    paddingVertical: SPACE.sm,
-    paddingHorizontal: SPACE.md,
-    borderRadius: RADIUS.button,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: SPACE.sm,
-  },
-  mapOverlayText: {
-    ...TYPE.calloutSemibold,
-  },
   emptyState: {
     flex: 1,
     justifyContent: 'center',
@@ -1468,18 +1562,34 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   mapSection: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
+    height: MAP_HEIGHT,
     overflow: 'hidden',
+    marginBottom: SPACE.md,
   },
   mapFull: {
     width: '100%',
     height: '100%',
   },
-  modalBody: {
-    flex: 1,
+  mapFallback: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: SPACE.lg,
+  },
+  mapFallbackText: {
+    ...TYPE.captionSemibold,
+    textAlign: 'center',
+  },
+  mapRefreshButton: {
+    position: 'absolute',
+    right: 12,
+    top: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   modalHeader: {
     position: 'absolute',
@@ -1495,27 +1605,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  modalContent: {
+  modalBody: {
     flex: 1,
-  },
-  stickyHeader: {
-    borderBottomWidth: BORDER.hairline,
-    borderBottomColor: 'transparent',
-  },
-  scrollContentContainer: {
-    flexGrow: 1,
-    paddingBottom: SPACE.xxl,
   },
   stationInfoSection: {
     paddingHorizontal: SPACING.screenX,
-    paddingTop: SPACE.xl,
-    paddingBottom: SPACE.lg,
+    paddingTop: SPACE.sm,
+    paddingBottom: SPACE.sm,
   },
   stationNameRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: SPACE.md,
+  },
+  stationHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACE.sm,
   },
   stationTextContainer: {
     flex: 1,
@@ -1534,22 +1641,48 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  tabsContainer: {
+    marginTop: SPACE.xs,
+    marginHorizontal: SPACING.screenX,
+    borderRadius: RADIUS.pill,
+    flexDirection: 'row',
+    overflow: 'hidden',
+    position: 'relative',
+    borderWidth: BORDER.card,
+    padding: 4,
+  },
+  tabsIndicator: {
+    position: 'absolute',
+    top: 4,
+    bottom: 4,
+    left: 4,
+    borderRadius: RADIUS.pill,
+  },
+  tabButton: {
+    flex: 1,
+    paddingVertical: SPACE.xs,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: SPACE.xs,
+    zIndex: 1,
+  },
+  tabText: {
+    ...TYPE.captionSemibold,
+    letterSpacing: 0.4,
+  },
   pager: {
     flex: 1,
+    marginTop: SPACE.md,
   },
   pageScroll: {
     flex: 1,
   },
   pageScrollContent: {
-    paddingTop: SPACE.md,
+    paddingTop: 0,
     paddingBottom: SPACE.md,
     flexGrow: 1,
-  },
-  modalSectionTitle: {
-    ...TYPE.sectionLabel,
-    marginBottom: SPACE.sm,
-    marginLeft: SPACING.screenX,
-    marginRight: SPACING.screenX,
   },
   trainsCard: {
     marginHorizontal: SPACING.screenX,
@@ -1558,7 +1691,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   cardListContent: {
-    paddingVertical: SPACE.sm,
+    paddingVertical: SPACE.xs,
   },
   boardsEmptyRow: {
     paddingVertical: SPACE.lg,
@@ -1595,7 +1728,7 @@ const styles = StyleSheet.create({
   trainTypeAndNumber: {
     flexDirection: 'row',
     alignItems: 'baseline',
-    gap: SPACE.xs,
+    gap: SPACE.xxs,
     marginBottom: SPACE.xxs,
   },
   trainTimeRow: {
@@ -1604,7 +1737,14 @@ const styles = StyleSheet.create({
     gap: SPACE.md,
   },
   trainType: {
-    ...TYPE.captionMedium,
+    fontSize: TYPE.callout.fontSize,
+    fontFamily: TYPE.bodySemibold.fontFamily,
+    lineHeight: TYPE.callout.lineHeight,
+  },
+  trainAv: {
+    fontSize: TYPE.callout.fontSize,
+    fontFamily: TYPE.bodySemibold.fontFamily,
+    lineHeight: TYPE.callout.lineHeight,
   },
   delayPill: {
     height: 24,
@@ -1710,6 +1850,7 @@ const styles = StyleSheet.create({
   listItem: {
     paddingVertical: SPACE.md,
     paddingHorizontal: SPACE.lg,
+    position: 'relative',
   },
   listItemContent: {
     flexDirection: 'row',
@@ -1733,16 +1874,6 @@ const styles = StyleSheet.create({
   listDivider: {
     height: BORDER.hairline,
     marginLeft: INSETS.listDividerLeft,
-  },
-  listItemLoading: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: SPACE.md,
-    paddingVertical: SPACE.xl,
-  },
-  listItemLoadingText: {
-    ...TYPE.subheadline,
   },
   listItemEmpty: {
     alignItems: 'center',

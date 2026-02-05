@@ -1,44 +1,55 @@
-import React, { useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Animated, PanResponder, TouchableOpacity } from 'react-native';
-import { TYPE } from '../utils/uiTokens';
+import React, { useEffect, useRef, useState } from 'react';
+import { Animated, Easing, PanResponder, StyleSheet, TouchableOpacity, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 
-const SWIPE_THRESHOLD = -60;
-const DELETE_BUTTON_WIDTH = 75;
+const SWIPE_THRESHOLD = 60;
+const ACTION_BUTTON_WIDTH = 75;
 
-export default function SwipeableRow({ children, onDelete, theme, onSwipeStart, onSwipeEnd, resetKey }) {
+export default function SwipeableRow({
+  children,
+  onDelete,
+  theme,
+  onSwipeStart,
+  onSwipeEnd,
+  resetKey,
+}) {
   const translateX = useRef(new Animated.Value(0)).current;
   const opacity = useRef(new Animated.Value(1)).current;
+  const height = useRef(new Animated.Value(0)).current;
+  const [rowHeight, setRowHeight] = useState(null);
+  const rowHeightRef = useRef(null);
   const isSwiping = useRef(false);
   const isDeleting = useRef(false);
 
   const deleteOpacity = translateX.interpolate({
-    inputRange: [-DELETE_BUTTON_WIDTH, -10, 0],
+    inputRange: [-ACTION_BUTTON_WIDTH, -10, 0],
     outputRange: [1, 1, 0],
     extrapolate: 'clamp',
   });
   const deleteTranslateX = translateX.interpolate({
-    inputRange: [-DELETE_BUTTON_WIDTH, 0],
-    outputRange: [0, DELETE_BUTTON_WIDTH],
+    inputRange: [-ACTION_BUTTON_WIDTH, 0],
+    outputRange: [0, ACTION_BUTTON_WIDTH],
     extrapolate: 'clamp',
   });
 
   useEffect(() => {
-    // Forza lo stato "chiuso" (utile dopo Undo/ri-render di lista)
     translateX.stopAnimation();
     opacity.stopAnimation();
+    height.stopAnimation();
     translateX.setValue(0);
     opacity.setValue(1);
+    if (rowHeightRef.current != null) {
+      height.setValue(rowHeightRef.current);
+    }
     isSwiping.current = false;
     isDeleting.current = false;
-  }, [resetKey, opacity, translateX]);
+  }, [resetKey, height, opacity, translateX]);
 
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => false,
       onMoveShouldSetPanResponder: (_, gestureState) => {
         const { dx, dy } = gestureState;
-        // Prende il controllo solo se il movimento orizzontale è
-        // molto maggiore di quello verticale (3 volte)
         return Math.abs(dx) > Math.abs(dy) * 3 && Math.abs(dx) > 10;
       },
       onPanResponderTerminationRequest: () => false,
@@ -50,40 +61,30 @@ export default function SwipeableRow({ children, onDelete, theme, onSwipeStart, 
         }
       },
       onPanResponderMove: (_, gestureState) => {
-        // Solo swipe a sinistra consentito
         if (gestureState.dx <= 0) {
           let translation = gestureState.dx;
-          if (translation < -DELETE_BUTTON_WIDTH) {
-            // Rubber banding effect quando vai oltre
-            const excess = Math.abs(translation) - DELETE_BUTTON_WIDTH;
-            translation = -DELETE_BUTTON_WIDTH - (excess * 0.3);
+          if (translation < -ACTION_BUTTON_WIDTH) {
+            const excess = Math.abs(translation) - ACTION_BUTTON_WIDTH;
+            translation = -ACTION_BUTTON_WIDTH - excess * 0.3;
           }
           translateX.setValue(translation);
         }
-        // Ignora completamente lo swipe a destra
       },
       onPanResponderRelease: (_, gestureState) => {
-        const velocity = gestureState.vx;
         const translation = gestureState.dx;
-        
         isSwiping.current = false;
         onSwipeEnd?.();
-        
-        // Se ha velocità negativa alta o ha superato la soglia, apri
-        if (velocity < -0.5 || translation < SWIPE_THRESHOLD) {
+        if (translation < -SWIPE_THRESHOLD) {
           Animated.spring(translateX, {
-            toValue: -DELETE_BUTTON_WIDTH,
+            toValue: -ACTION_BUTTON_WIDTH,
             useNativeDriver: true,
-            velocity: velocity * 1000,
             tension: 40,
             friction: 7,
           }).start();
         } else {
-          // Altrimenti chiudi
           Animated.spring(translateX, {
             toValue: 0,
             useNativeDriver: true,
-            velocity: velocity * 1000,
             tension: 40,
             friction: 7,
           }).start();
@@ -104,32 +105,47 @@ export default function SwipeableRow({ children, onDelete, theme, onSwipeStart, 
   const handleDelete = () => {
     if (isDeleting.current) return;
     isDeleting.current = true;
-    
-    // Animazione: tile scorre via a sinistra con fade out
+
     Animated.parallel([
       Animated.timing(translateX, {
         toValue: -500,
         duration: 300,
+        easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
       Animated.timing(opacity, {
         toValue: 0,
         duration: 300,
+        easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
     ]).start(() => {
-      onDelete();
+      Animated.timing(height, {
+        toValue: 0,
+        duration: 220,
+        useNativeDriver: false,
+      }).start(() => {
+        onDelete?.();
+      });
     });
   };
 
   return (
-    <Animated.View style={[
-      styles.container,
-      {
-        opacity,
-      },
-    ]}>
-      {/* Pulsante Delete sotto */}
+    <Animated.View
+      style={[
+        styles.container,
+        {
+          height: rowHeight == null ? undefined : height,
+        },
+      ]}
+      onLayout={(event) => {
+        if (rowHeightRef.current != null) return;
+        const measured = event.nativeEvent.layout.height;
+        rowHeightRef.current = measured;
+        setRowHeight(measured);
+        height.setValue(measured);
+      }}
+    >
       <Animated.View
         style={[
           styles.deleteContainer,
@@ -146,18 +162,16 @@ export default function SwipeableRow({ children, onDelete, theme, onSwipeStart, 
           activeOpacity={0.8}
           pointerEvents={isDeleting.current ? 'none' : 'auto'}
         >
-          <Text style={[styles.deleteText, { color: theme?.colors?.onDestructive || theme?.colors?.text || '#FFFFFF' }]}>
-            Elimina
-          </Text>
+          <Ionicons name="trash" size={20} color={theme?.colors?.onDestructive || theme?.colors?.text || '#FFFFFF'} />
         </TouchableOpacity>
       </Animated.View>
 
-      {/* Contenuto swipeable */}
       <Animated.View
         style={[
           styles.swipeableContent,
           {
             backgroundColor: theme.colors.card,
+            opacity,
             transform: [{ translateX }],
           },
         ]}
@@ -182,7 +196,7 @@ const styles = StyleSheet.create({
     right: 0,
     top: 0,
     bottom: 0,
-    width: 75,
+    width: ACTION_BUTTON_WIDTH,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -192,11 +206,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  deleteText: {
-    ...TYPE.titleSemibold,
-  },
   swipeableContent: {
-    // backgroundColor applicato tramite prop
     width: '100%',
     alignSelf: 'stretch',
   },

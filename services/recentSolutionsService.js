@@ -13,15 +13,27 @@ const makeKey = (entry) => {
   if (!entry || typeof entry !== 'object') return null;
   const fromName = norm(entry.fromName);
   const toName = norm(entry.toName);
-  const whenISO = norm(entry.whenISO);
-  if (!fromName || !toName || !whenISO) return null;
+  if (!fromName || !toName) return null;
 
   const fromId = norm(entry.fromId);
   const toId = norm(entry.toId);
-  const parts = [`${fromName}→${toName}`, whenISO];
+  const parts = [`${fromName}→${toName}`];
   if (fromId) parts.push(`fromId:${fromId}`);
   if (toId) parts.push(`toId:${toId}`);
   return parts.join('|');
+};
+
+const pickRouteEntry = (entry) => {
+  if (!entry || typeof entry !== 'object') return null;
+  const fromName = norm(entry.fromName);
+  const toName = norm(entry.toName);
+  if (!fromName || !toName) return null;
+  return {
+    fromName,
+    fromId: entry.fromId ?? null,
+    toName,
+    toId: entry.toId ?? null,
+  };
 };
 
 export const getRecentSolutions = async (limit = 5) => {
@@ -33,10 +45,11 @@ export const getRecentSolutions = async (limit = 5) => {
     const seen = new Set();
     const deduped = [];
     for (const e of list) {
-      const id = makeKey(e);
+      const base = pickRouteEntry(e);
+      const id = makeKey(base);
       if (!id || seen.has(id)) continue;
       seen.add(id);
-      deduped.push({ ...e, id });
+      deduped.push({ ...base, id });
     }
 
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(deduped.slice(0, MAX_RECENTS)));
@@ -53,11 +66,13 @@ export const saveRecentSolution = async (entry) => {
     const parsed = stored ? JSON.parse(stored) : [];
     const list = Array.isArray(parsed) ? parsed : [];
 
-    const id = makeKey(entry);
+    const base = pickRouteEntry(entry);
+    const id = makeKey(base);
     if (!id) return;
 
     const without = list.filter((e) => makeKey(e) !== id && norm(e?.id) !== id);
-    const next = [{ ...entry, id }, ...without].slice(0, MAX_RECENTS);
+    const cleaned = without.map((e) => pickRouteEntry(e)).filter(Boolean);
+    const next = [{ ...base, id }, ...cleaned].slice(0, MAX_RECENTS);
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   } catch (error) {
     console.warn('Error saving recent solution:', error);
@@ -92,10 +107,11 @@ export const overwriteRecentSolutions = async (entries) => {
     const seen = new Set();
     const deduped = [];
     for (const e of list) {
-      const id = makeKey(e);
+      const base = pickRouteEntry(e);
+      const id = makeKey(base);
       if (!id || seen.has(id)) continue;
       seen.add(id);
-      deduped.push({ ...e, id });
+      deduped.push({ ...base, id });
     }
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(deduped.slice(0, MAX_RECENTS)));
   } catch (error) {

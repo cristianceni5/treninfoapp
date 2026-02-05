@@ -1,16 +1,12 @@
-import stationsData from '../data/stations-viaggiatreno.json';
+import stationsData from '../data/stazioni.json';
 
 function normalizeStation(station) {
   if (!station) return null;
 
-  const region = station.region ?? station.regionId ?? null;
-
-  const city =
-    typeof station.city === 'string' && station.city.trim()
-      ? station.city.trim()
-      : typeof station[''] === 'string' && station[''].trim()
-        ? station[''].trim()
-        : null;
+  const id = station.viaggiatrenoId ?? station.id ?? null;
+  const name = station.nome ?? station.name ?? null;
+  const region = station.regionId ?? station.region ?? null;
+  const city = typeof station.city === 'string' && station.city.trim() ? station.city.trim() : null;
 
   const toNumberOrNull = (value) => {
     if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -23,6 +19,8 @@ function normalizeStation(station) {
 
   return {
     ...station,
+    id,
+    name,
     city,
     region,
     lat: toNumberOrNull(station.lat),
@@ -45,9 +43,9 @@ export function searchStations(query, maxResults = 10) {
   const words = normalizedQuery.split(/\s+/);
 
   const results = stationsData
-    .map(station => {
+    .map((station) => {
       const normalizedStation = normalizeStation(station);
-      const normalizedName = normalizeString(station.name);
+      const normalizedName = normalizeString(normalizedStation?.name || '');
       
       // Calcola score di rilevanza
       let score = 0;
@@ -69,15 +67,15 @@ export function searchStations(query, maxResults = 10) {
         score = 25;
       }
 
-      return { ...normalizedStation, score };
+      return normalizedStation ? { ...normalizedStation, score } : null;
     })
-    .filter(station => station.score > 0)
+    .filter((station) => station && station.score > 0)
     .sort((a, b) => {
       // Ordina prima per score, poi alfabeticamente
       if (b.score !== a.score) {
         return b.score - a.score;
       }
-      return a.name.localeCompare(b.name, 'it');
+      return String(a.name || '').localeCompare(String(b.name || ''), 'it');
     })
     .slice(0, maxResults);
 
@@ -90,7 +88,16 @@ export function searchStations(query, maxResults = 10) {
  * @returns {Object|null} La stazione o null se non trovata
  */
 export function getStationById(stationId) {
-  const found = stationsData.find(station => station.id === stationId) || null;
+  const id = String(stationId || '').trim();
+  if (!id) return null;
+  const found =
+    stationsData.find((station) => {
+      const rawId = station.viaggiatrenoId ?? station.id ?? null;
+      if (rawId != null && String(rawId) === id) return true;
+      if (station.lefrecceId != null && String(station.lefrecceId) === id) return true;
+      if (station.italoId != null && String(station.italoId) === id) return true;
+      return false;
+    }) || null;
   return found ? normalizeStation(found) : null;
 }
 
@@ -106,7 +113,8 @@ export function getStationByName(stationName) {
   const target = normalizeString(name);
   if (!target) return null;
 
-  const exact = stationsData.find((s) => normalizeString(s?.name || '') === target) || null;
+  const exact =
+    stationsData.find((s) => normalizeString(s?.nome || s?.name || '') === target) || null;
   if (exact) return normalizeStation(exact);
 
   const best = searchStations(name, 1)[0] || null;
