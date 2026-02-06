@@ -38,14 +38,62 @@ export default function InfoScreen() {
           contentContainerStyle={{ paddingBottom: SPACE.xl, paddingTop: SPACE.xl }}
         >
           <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: theme.colors.textSecondary }]}>DISCLAIMER</Text>
+            <Card style={styles.infoCard}>
+              <Text style={[styles.infoText, { color: theme.colors.text }]}>
+                <Text style={[styles.infoTextSemibold, { color: theme.colors.text }]}>Treninfo non è affiliata con RFI S.p.A., Trenitalia, NTV (Italo) o altre società ferroviarie.</Text>
+                {' '}Questa applicazione è un progetto indipendente sviluppato per fornire informazioni in tempo reale su treni e orari ferroviari.
+                {'\n\n'}
+                L'uso delle API pubbliche è destinato <Text style={[styles.infoTextSemibold, { color: theme.colors.text }]}>esclusivamente alla consultazione</Text> di informazioni su orari, ritardi e stato dei treni. <Text style={[styles.infoTextSemibold, { color: theme.colors.text }]}>Non è possibile acquistare titoli di viaggio</Text> attraverso questa app.
+                {'\n\n'}
+                Grazie a un <Text style={[styles.infoTextSemibold, { color: theme.colors.text }]}>sistema di cache avanzato</Text> e al limitato numero di utenti, l'app effettua un numero ridotto di richieste ai server proprietari, <Text style={[styles.infoTextSemibold, { color: theme.colors.text }]}>non causando alcun danno o sovraccarico</Text> ai loro sistemi.
+              </Text>
+            </Card>
+          </View>
+
+          <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: theme.colors.textSecondary }]}>COME FUNZIONA</Text>
             <Card style={styles.infoCard}>
               <Text style={[styles.infoText, { color: theme.colors.text }]}>
-                Treninfo combina servizi ufficiali (LeFrecce, RFI/ViaggiaTreno) per mostrare treni, stazioni e stati in tempo reale.
+                Treninfo è un server proxy che normalizza i dati dei server di RFI (ViaggiaTreno e LeFrecce) e NTV (.italo) in JSON pronti per client web e app.
                 {'\n\n'}
-                Quando cerchi un treno, ricevi numero, tratta, orari programmati, ritardi e posizione. Nella ricerca stazioni trovi partenze e arrivi aggiornati.
+                L'app combina servizi ufficiali per mostrare informazioni in tempo reale su treni, stazioni, orari, ritardi e soluzioni di viaggio. Quando cerchi un treno, ricevi numero, tratta, orari programmati, ritardi e posizione attuale. Nella ricerca stazioni trovi partenze e arrivi aggiornati.
                 {'\n\n'}
-                Preferiti e recenti restano sul dispositivo. La posizione viene usata solo per suggerire stazioni vicine e non viene salvata.
+                I dati vengono unificati da più fonti: ViaggiaTreno e LeFrecce usano database diversi per i nomi delle stazioni, così come Italo. Treninfo normalizza tutti questi dati per offrire un'esperienza coerente.
+              </Text>
+            </Card>
+          </View>
+
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: theme.colors.textSecondary }]}>CLASSIFICAZIONE TRENI</Text>
+            <Card style={styles.infoCard}>
+              <Text style={[styles.infoText, { color: theme.colors.text }]}>
+                <Text style={[styles.trainSigla, { color: '#E20613' }]}>FR</Text> Frecciarossa (AV) — servizio Alta Velocità. Sulle linee AV/AC in Italia la velocità commerciale arriva fino a 300 km/h. Materiale tipico: ETR 500 (300 km/h) ed ETR 1000/Frecciarossa 1000 (progettato per 360 km/h e testato fino a 400; in Italia limitato a 300). Su alcune relazioni sono usati anche ETR 600/700 (fino a 250 km/h).
+                {'\n\n'}
+                <Text style={[styles.trainSigla, { color: '#E20613' }]}>FA</Text> Frecciargento (AV) — Alta Velocità + linee convenzionali. Oggi il servizio è tipicamente effettuato con convogli “Pendolino” a assetto variabile ETR 485, con velocità fino a 250 km/h.
+                {'\n\n'}
+                <Text style={[styles.trainSigla, { color: '#9C1A39' }]}>ITA</Text> Italo (AV) — servizi NTV su rete AV. Materiale tipico: AGV 575 (progettato per 360 km/h, in Italia fino a 300 km/h) ed ETR 675/Italo EVO (velocità massima 250 km/h). I convogli possono operare sia a 25 kV AC sia a 3 kV DC.
+                {'\n\n'}
+                <Text style={[styles.trainSigla, { color: '#2196F3' }]}>FB</Text> Frecciabianca — media/lunga percorrenza su linee convenzionali; velocità commerciale fino a 200 km/h. Materiale tipico: ETR 460/463.
+                {'\n\n'}
+                <Text style={[styles.trainSigla, { color: '#2196F3' }]}>IC</Text> InterCity (giorno) — tratte lunghe su linee convenzionali con velocità massima di 200 km/h. Materiale tipico: carrozze di 1ª (Gran Comfort) e 1ª/2ª (UIC-Z1) a salone; locomotive in uso includono E 401, E 402B, E 403, E 414 ed E 464.
+                {'\n\n'}
+                <Text style={[styles.trainSigla, { color: '#2196F3' }]}>EC</Text> EuroCity — categoria analoga agli InterCity, talvolta con materiale rotabile estero su collegamenti internazionali.
+                {'\n\n'}
+                <Text style={[styles.trainSigla, { color: '#0D47A1' }]}>ICN</Text> InterCity Notte / <Text style={[styles.trainSigla, { color: '#0D47A1' }]}>EN</Text> EuroNight — lunga percorrenza (notte). Gli ICN possono includere (oltre ai posti a sedere) carrozze cuccette e carrozze letto; prestazioni e schema simili agli InterCity su rete convenzionale.
+                {'\n\n'}
+                <Text style={[styles.trainSigla, { color: theme.colors.textSecondary }]}>REG</Text> Regionali — servizio locale e metropolitano su linee convenzionali (e a volte su AV) fino a 160 km/h. Convogli tipici: Pop, Rock, Vivalto, Jazz, Minuetto (anche diesel) e carrozze storiche MDVC/MDVE; spesso con locomotori E 464.
+              </Text>
+            </Card>
+          </View>
+
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: theme.colors.textSecondary }]}>DATI E PRIVACY</Text>
+            <Card style={styles.infoCard}>
+              <Text style={[styles.infoText, { color: theme.colors.text }]}>
+                I tuoi preferiti e recenti restano salvati solo sul dispositivo. La posizione viene usata esclusivamente per suggerire stazioni vicine e non viene mai salvata o inviata a server esterni.
+                {'\n\n'}
+                L'app non usa strumenti di analytics o profilazione. Le richieste vengono inviate solo ai server Treninfo per ottenere dati in tempo reale su treni e stazioni.
               </Text>
             </Card>
           </View>
@@ -88,6 +136,12 @@ export default function InfoScreen() {
                 }}
                 right={<Ionicons name="chevron-forward" size={18} color={theme.colors.textSecondary} style={{ opacity: 0.35 }} />}
               />
+            </Card>
+          </View>
+
+          <View style={styles.section}>
+            <Card style={[styles.infoCard, styles.creditCard]}>
+              <Text style={[styles.creditText, { color: theme.colors.textSecondary }]}>Created by Cristian Ceni © 2026</Text>
             </Card>
           </View>
         </ScrollView>
@@ -287,6 +341,25 @@ const styles = StyleSheet.create({
   infoText: {
     ...TYPE.body,
     lineHeight: 22,
+  },
+  infoTextBold: {
+    ...TYPE.bodyMedium,
+    lineHeight: 22,
+  },
+  infoTextSemibold: {
+    ...TYPE.bodySemibold,
+    lineHeight: 22,
+  },
+  trainSigla: {
+    ...TYPE.bodySemibold,
+  },
+  creditCard: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  creditText: {
+    ...TYPE.caption,
+    textAlign: 'center',
   },
   separator: {
     height: BORDER.hairline,
